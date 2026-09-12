@@ -56,12 +56,24 @@ TOOLS="$( { find /usr/local/bin /usr/local/sbin /usr/bin /bin /usr/sbin /sbin -x
 # /usr/bin/env is what setpriv starts each run through, so it stays open; it is not a route to
 # anything, since whatever it executes is checked on its own. Only regular files are listed: the
 # merged /bin is itself a symlink to /usr/bin, and closing that directory would shut the whole
-# tree, launcher included. The dynamic loader is left out as
-# well: /usr/bin/ld.so links to it, and closing it would stop every dynamically linked program,
-# the launcher included, not only the ones the agent's code might spawn.
+# tree, launcher included. The dynamic loader is not in this list; it is handled on its own below,
+# only for the graded runs, because closing it needs the launch arranged around it.
 close_tools() { for f in $TOOLS; do chmod 750 "$f" 2>/dev/null || true; done; }
 open_tools()  { for f in $TOOLS; do chmod 755 "$f" 2>/dev/null || true; done; }
-trap open_tools EXIT
+
+# The dynamic loader. A native helper the program drops in scratch and marks executable needs the
+# loader to run, and closing every interpreter does not touch it, so for the two graded runs the
+# loader is closed to the build user too. It cannot simply go in TOOLS: a dynamically linked program
+# whose loader is unreadable does not start at all, the built binary included. The graded runs get
+# around that by launching the binary as setpriv's very first exec, which the kernel maps before the
+# credential change fully takes effect, so the binary itself loads while every later exec it makes,
+# an interpreter or a native helper alike, is held to the closed loader and cannot run. Root keeps
+# access throughout (750 is root-readable), so the launch's own shell and setpriv are unaffected.
+LOADER="$(readlink -f "$(ldd /bin/ls 2>/dev/null | grep -o '/[^ ]*ld-linux[^ ]*' | head -1)" 2>/dev/null)"
+[ -e "$LOADER" ] || LOADER=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+close_loader() { chmod 750 "$LOADER" 2>/dev/null || true; }
+open_loader()  { chmod 755 "$LOADER" 2>/dev/null || true; }
+trap 'open_tools; open_loader' EXIT
 
 # Compile the collected sources ourselves, as the build user, from the directory the instruction
 # documents. The agent's build.sh is not run: the instruction says the forecast comes out of the
@@ -138,12 +150,16 @@ run_once() {
   }
   scratch_list > /opt/scratch_before.txt
   close_tools
-  setsid \
-    setpriv --clear-groups --no-new-privs --reuid runner --regid runner \
-    env -C /app/forecast HOME=/home/runner /app/forecast/forecast "$data" "$asked" &
+  close_loader
+  # A root shell sets the working directory the instruction documents and the runner's HOME, then
+  # hands off with exec to setpriv, whose first exec is the binary itself: the binary loads through
+  # the first-exec window while anything it spawns afterwards, with the loader closed, cannot. The
+  # shell and setpriv run as root, so the closed loader does not touch them.
+  setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$1" "$2"' _ "$data" "$asked" &
   pid=$!
   wait "$pid"
   echo "run exit status: $? ($data -> $asked)"
+  open_loader
   open_tools
   kill -TERM -- -"$pid" 2>/dev/null || true
   kill -KILL -- -"$pid" 2>/dev/null || true

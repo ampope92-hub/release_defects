@@ -415,10 +415,12 @@ begin
          if I = 0 then
             raise Program_Error with "forecast release missing from releases.csv: " & To_String (Forecast_Versions (J));
          end if;
-         Total := Ultimate (I, Ticket, Ticket_Share);
-         if Rel (I).Reporter then
-            Total := Total + Ultimate (I, Crash, Crash_Share);
-         end if;
+         --  Both sources are added for every forecast release. Only the crash CURVE cohort is
+         --  reporter-restricted (Arrival above), not a release's own crash term: a release that
+         --  carries crash reports still gets them grossed up, whatever its crash_reporter column
+         --  says. A release with no crash reports contributes a zero here, so this is a no-op for
+         --  the ordinary ticket-only release.
+         Total := Ultimate (I, Ticket, Ticket_Share) + Ultimate (I, Crash, Crash_Share);
          N := Natural (Long_Float'Rounding (Total));
          if J > 1 then
             Put (Result, ",");
