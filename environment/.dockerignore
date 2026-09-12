@@ -1,4 +1,19 @@
-out/
-__pycache__/
 .git
-*.log
+.gitignore
+__pycache__/
+*.pyc
+.DS_Store
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/node_modules/
+
+# not part of the build context
+solution/
+tests/
+.env
+.env.*
+.venv/
+venv/
+env/
+ENV/

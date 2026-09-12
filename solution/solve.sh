@@ -1,20 +1,16 @@
-#!/bin/bash
-# Oracle solution.
-#
-# Document what was actually wrong and how the fix was derived — a reviewer reads this
-# to judge whether the task is solvable by reasoning rather than by guessing:
-#
-#   src/summarize.py   Three defects. Entries came back in filesystem order instead of
-#                      sorted by name; total_words counted files rather than words; and
-#                      the report was written without its trailing newline.
-#
-# Harbor mounts solution/ at /solution/ and runs this script as the oracle agent.
+#!/usr/bin/env bash
 set -euo pipefail
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cp "$HERE/src/summarize.py" /app/src/summarize.py
-
-python3 /app/src/summarize.py --data /app/data --out /app/out/report.json
-
-sha256sum /app/out/report.json
+# Reference day-365 forecast.
+#
+# The memo's table divides the reports a release has collected so far by its installs, and
+# the young releases look clean because their tickets are still on their way: a ticket
+# trails the release by weeks or months. The older releases show how a release's count grows
+# column by 30-day column, and that growth is what a young release still has coming. From
+# 4.20 the crash reporter adds a second stream that lands within days, so the two streams
+# get separate growth patterns, tickets from every release and crash reports from the
+# releases that have the reporter, and the two are added. See forecast.adb alongside.
+install -m 644 "$(dirname "$0")/forecast.adb" /app/forecast/src/forecast.adb
+bash /app/forecast/build.sh
+mkdir -p /app/out
+/app/forecast/forecast /app/data /app/out/forecast.json

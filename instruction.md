@@ -1,11 +1,15 @@
-The summariser in /app is wrong. It runs, but the report it writes does not match what
-downstream expects.
+Support is planning staffing for the next two quarters. They need the count each recent release will finish with, not what it holds today. The tracker export is in `/app/data`: the release list, every report received up to the export date, the policy, and a README covering each file.
 
-Rebuild /app/out/report.json for the files under /app/data. The report is a JSON object with
-a "files" array — one entry per .txt file, each with its "name" and its "words" count — ordered
-by name, plus a "total_words" holding the sum of every word counted. It is indented by two
-spaces and ends with a trailing newline.
+We write Ada here. There is a stub at `/app/forecast/src/forecast.adb`. You can split the program across more `.adb`/`.ads` files next to it under `src/` if you want. There is also a build script at `/app/forecast/build.sh` for your own use, which we do not run, because we compile the source ourselves.
 
-Keep it driveable the way CI drives it: the program stays at /app/src/summarize.py and is run as
-`python3 /app/src/summarize.py --data <dir> --out <file>`. CI points it at directories other
-than the one shipped here.
+- `/app/forecast/forecast <data-dir> <output-json>` writes one JSON object with two keys, in either order. Given any other number of arguments it prints a line on standard error, leaves standard output empty, exits 2 and writes no file.
+- `arrival_share` has two keys, `ticket` and `crash`. Under each, the ages 30, 60, 90 and so on in thirty-day steps up to 360, written as strings. Build it from the releases in the export at least 365 days old; crash reports come only from releases that ship the reporter, so the crash curve uses only those. For each source, add up its open reports with an opened lag under 30 days, under 60, and so on, over that cohort, and divide by its open reports the same cohort held by day 365. Every point must land within 0.05 of ours.
+- `reports_by_day_365` has keys exactly the versions listed under `forecast_releases` in the given directory's policy.json, mapped to non-negative integers. A release A days old holds floor((A+1)/30) complete thirty-day columns: 29 days old is one column, covering opened lag 0 to 29; 100 days old is three, the third covering opened lag 0 to 89. That count tops out at twelve: a release 359 days old or older still uses the twelfth column, the 360-day one, since the curve stops there. Take the release's last complete column, N days: count its open reports from one source with opened lag under N, divide by your curve's N-day figure for that source, do the same for the other source, and add the two.
+- Every report row also carries `status` (`open`, `duplicate` or `invalid`) and `opened_date`. Drop any report that is not `open` from every count and curve. Compute a report's lag from `opened_date`, never from `reported_date`.
+- `horizon_days` is 365 in both exports. If a policy asks for another horizon, print a line on standard error, write no file and exit 3.
+- Stay in the Ada standard library; the GNAT hierarchy is removed from the image. No network. We build every `.adb`/`.ads` file under `src/` with `gnatmake -I src`, `forecast.adb` as the main procedure, and run the binary from `/app/forecast`; nothing outside those Ada files ever reaches that build, so a helper written any other way cannot end up linked into it.
+- While it runs, nothing else on the box is executable and nothing else in `/app/forecast` is readable, so whatever your program needs has to be inside the binary. Anything left executable anywhere else throws that run's output away.
+- It runs again, unchanged, on another product's export: three files and a README in the same format, different releases and policy, and a crash reporter that went in at a different release.
+- The three files in `/app/data` are checked against our copy afterward. Leave them alone and put nothing else in that directory.
+
+We score forecasts against the count each release actually reached by day 365. Every forecast release must land within `tolerance_per_release` of its count, and the total across those releases within `tolerance_total` of the summed counts. Both are fractions of the count, not numbers of reports, so 0.2 means twenty percent. They sit in the policy so you can see what you are held to; the other product's are different figures.

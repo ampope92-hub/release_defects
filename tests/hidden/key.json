@@ -1,0 +1,222 @@
+{
+  "forecast_releases": [
+    "7.32",
+    "7.33",
+    "7.34",
+    "7.35",
+    "7.36",
+    "7.38"
+  ],
+  "reports_within_365_days": {
+    "7.32": 192,
+    "7.33": 633,
+    "7.34": 618,
+    "7.35": 865,
+    "7.36": 880,
+    "7.38": 594
+  },
+  "tolerance_per_release": 0.17,
+  "tolerance_total": 0.07,
+  "truth": {
+    "7.0": {
+      "reports_within_365_days": 203,
+      "true_rate_per_10k": 7.599,
+      "release_date": "2022-01-12"
+    },
+    "7.1": {
+      "reports_within_365_days": 215,
+      "true_rate_per_10k": 9.487,
+      "release_date": "2022-02-13"
+    },
+    "7.2": {
+      "reports_within_365_days": 45,
+      "true_rate_per_10k": 4.811,
+      "release_date": "2022-03-14"
+    },
+    "7.3": {
+      "reports_within_365_days": 262,
+      "true_rate_per_10k": 13.494,
+      "release_date": "2022-04-23"
+    },
+    "7.4": {
+      "reports_within_365_days": 361,
+      "true_rate_per_10k": 6.547,
+      "release_date": "2022-05-27"
+    },
+    "7.5": {
+      "reports_within_365_days": 167,
+      "true_rate_per_10k": 6.582,
+      "release_date": "2022-07-05"
+    },
+    "7.6": {
+      "reports_within_365_days": 193,
+      "true_rate_per_10k": 10.749,
+      "release_date": "2022-08-06"
+    },
+    "7.7": {
+      "reports_within_365_days": 405,
+      "true_rate_per_10k": 10.582,
+      "release_date": "2022-09-12"
+    },
+    "7.8": {
+      "reports_within_365_days": 287,
+      "true_rate_per_10k": 7.479,
+      "release_date": "2022-10-17"
+    },
+    "7.9": {
+      "reports_within_365_days": 120,
+      "true_rate_per_10k": 9.131,
+      "release_date": "2022-11-21"
+    },
+    "7.10": {
+      "reports_within_365_days": 253,
+      "true_rate_per_10k": 8.842,
+      "release_date": "2022-12-27"
+    },
+    "7.11": {
+      "reports_within_365_days": 514,
+      "true_rate_per_10k": 9.897,
+      "release_date": "2023-01-27"
+    },
+    "7.12": {
+      "reports_within_365_days": 418,
+      "true_rate_per_10k": 11.382,
+      "release_date": "2023-02-25"
+    },
+    "7.13": {
+      "reports_within_365_days": 470,
+      "true_rate_per_10k": 11.426,
+      "release_date": "2023-03-31"
+    },
+    "7.14": {
+      "reports_within_365_days": 235,
+      "true_rate_per_10k": 12.382,
+      "release_date": "2023-04-29"
+    },
+    "7.15": {
+      "reports_within_365_days": 239,
+      "true_rate_per_10k": 11.778,
+      "release_date": "2023-06-07"
+    },
+    "7.16": {
+      "reports_within_365_days": 270,
+      "true_rate_per_10k": 10.335,
+      "release_date": "2023-07-16"
+    },
+    "7.17": {
+      "reports_within_365_days": 314,
+      "true_rate_per_10k": 17.315,
+      "release_date": "2023-08-25"
+    },
+    "7.18": {
+      "reports_within_365_days": 503,
+      "true_rate_per_10k": 22.242,
+      "release_date": "2023-10-02"
+    },
+    "7.19": {
+      "reports_within_365_days": 573,
+      "true_rate_per_10k": 15.612,
+      "release_date": "2023-11-03"
+    },
+    "7.20": {
+      "reports_within_365_days": 498,
+      "true_rate_per_10k": 14.606,
+      "release_date": "2023-12-11"
+    },
+    "7.21": {
+      "reports_within_365_days": 227,
+      "true_rate_per_10k": 15.944,
+      "release_date": "2024-01-08"
+    },
+    "7.22": {
+      "reports_within_365_days": 535,
+      "true_rate_per_10k": 15.025,
+      "release_date": "2024-02-11"
+    },
+    "7.23": {
+      "reports_within_365_days": 397,
+      "true_rate_per_10k": 18.198,
+      "release_date": "2024-03-14"
+    },
+    "7.24": {
+      "reports_within_365_days": 503,
+      "true_rate_per_10k": 20.999,
+      "release_date": "2024-04-14"
+    },
+    "7.25": {
+      "reports_within_365_days": 538,
+      "true_rate_per_10k": 22.298,
+      "release_date": "2024-05-22"
+    },
+    "7.26": {
+      "reports_within_365_days": 736,
+      "true_rate_per_10k": 17.454,
+      "release_date": "2024-06-21"
+    },
+    "7.27": {
+      "reports_within_365_days": 347,
+      "true_rate_per_10k": 30.096,
+      "release_date": "2024-07-25"
+    },
+    "7.28": {
+      "reports_within_365_days": 406,
+      "true_rate_per_10k": 15.35,
+      "release_date": "2024-08-29"
+    },
+    "7.29": {
+      "reports_within_365_days": 766,
+      "true_rate_per_10k": 22.236,
+      "release_date": "2024-10-02"
+    },
+    "7.30": {
+      "reports_within_365_days": 334,
+      "true_rate_per_10k": 19.302,
+      "release_date": "2024-11-07"
+    },
+    "7.31": {
+      "reports_within_365_days": 936,
+      "true_rate_per_10k": 23.571,
+      "release_date": "2024-12-14"
+    },
+    "7.32": {
+      "reports_within_365_days": 192,
+      "true_rate_per_10k": 14.725,
+      "release_date": "2025-01-23"
+    },
+    "7.33": {
+      "reports_within_365_days": 633,
+      "true_rate_per_10k": 22.347,
+      "release_date": "2025-03-01"
+    },
+    "7.34": {
+      "reports_within_365_days": 618,
+      "true_rate_per_10k": 29.278,
+      "release_date": "2025-04-01"
+    },
+    "7.35": {
+      "reports_within_365_days": 865,
+      "true_rate_per_10k": 43.794,
+      "release_date": "2025-04-29"
+    },
+    "7.36": {
+      "reports_within_365_days": 880,
+      "true_rate_per_10k": 21.251,
+      "release_date": "2025-06-07"
+    },
+    "7.37": {
+      "reports_within_365_days": 572,
+      "true_rate_per_10k": 21.125,
+      "release_date": "2025-07-08"
+    },
+    "7.38": {
+      "reports_within_365_days": 594,
+      "true_rate_per_10k": 25.967,
+      "release_date": "2025-01-07"
+    },
+    "7.39": {
+      "reports_within_365_days": 816,
+      "true_rate_per_10k": 30.075,
+      "release_date": "2024-08-04"
+    }
+  }
+}
