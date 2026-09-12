@@ -126,7 +126,7 @@ def main():
         tol_release, tol_total = 0.17, 0.07
         installs_mu = math.log(300000)
         ambient_bad_p = 0.012
-        storm_extra_mean = 3200.0
+        storm_extra_mean = 8000.0
         triage_med, triage_sig = 65.0, 0.6
     else:
         product, major, n_rel = "ledgerdesk", 4, 32
@@ -198,14 +198,30 @@ def main():
         # boundary, so an off-by-one ">" instead of ">=" excludes a release the contract
         # requires included). Neither is special beyond its date; both go through
         # gen_one_release exactly like every release above.
+        #
+        # The age-365 release also needs to be big enough, and its crash reports slow enough
+        # to arrive, that leaving it out of the pool actually moves a share. Tickets are pooled
+        # over all twenty-nine finished releases, so one more of them barely moves that curve
+        # regardless of size; crash reports are pooled only over the ones that ship the
+        # reporter, fourteen once this one is added, so a single release carries much more
+        # weight there. This one is a major push, installed far more widely, and it shipped
+        # with an early build of the crash reporter that took longer to phone reports home, so
+        # its crash arrival is materially slower than the pool's while its tickets behave like
+        # any other release.
         for age_days in (209, 365):
             i = len(releases)
             version = f"{major}.{i}"
             rd = export - dt.timedelta(days=age_days)
-            installs = int(rng.lognormvariate(installs_mu, 0.35))
+            release_kwargs = {**gen_kwargs}
+            if age_days == 365:
+                mu_installs = installs_mu + math.log(15.0)
+                release_kwargs["crash_med"] = gen_kwargs["crash_med"] * 4.0
+            else:
+                mu_installs = installs_mu
+            installs = int(rng.lognormvariate(mu_installs, 0.35))
             has_reporter = True
             rel_reports, within, mu = gen_one_release(
-                rng, rng_status, rng_triage, i, rd, installs, has_reporter, export, **gen_kwargs)
+                rng, rng_status, rng_triage, i, rd, installs, has_reporter, export, **release_kwargs)
             for reported, source, status, opened in rel_reports:
                 reports.append((version, reported, source, status, opened))
             releases.append((version, rd, installs, has_reporter))
