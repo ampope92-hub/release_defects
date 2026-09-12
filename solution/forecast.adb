@@ -204,14 +204,21 @@ procedure Forecast is
             raise Program_Error with "policy.json has no horizon_days";
          end if;
          P := Index (S, ":", P) + 1;
-         while P <= S'Last and then S (P) = ' ' loop
+         --  JSON whitespace is any of four bytes, not only a space: a tab between the colon
+         --  and the value is as legal as a space and must not read as a missing number.
+         while P <= S'Last
+           and then (S (P) = ' ' or else S (P) = ASCII.HT
+                     or else S (P) = ASCII.LF or else S (P) = ASCII.CR)
+         loop
             P := P + 1;
          end loop;
          Q := P;
          while Q <= S'Last and then S (Q) in '0' .. '9' loop
             Q := Q + 1;
          end loop;
-         if Q = P or else Integer'Value (S (P .. Q - 1)) /= Horizon then
+         --  A run of more than nine digits can neither be 365 nor fit a 32-bit Integer, so it
+         --  is refused as another horizon before Integer'Value could raise Constraint_Error.
+         if Q = P or else Q - P > 9 or else Integer'Value (S (P .. Q - 1)) /= Horizon then
             raise Wrong_Horizon;
          end if;
 

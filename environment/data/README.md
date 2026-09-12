@@ -32,7 +32,7 @@ a user gets round to writing it, usually weeks and often months after the releas
 filed against; a crash report is sent by the reporter within days of the crash that produced it.
 So the reports a release has against it on the export date are only the share of its eventual
 reports that its age has allowed to arrive, and that share is not the same for the two sources.
-The releases already past day 365 are the ones that have finished collecting.
+The releases at least 365 days old are the ones that have finished collecting.
 
 A release's age in days sets how many complete thirty-day columns the export holds for it. An
 age of A days is A+1 days of history, today included, so it holds floor((A+1)/30) complete

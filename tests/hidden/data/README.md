@@ -35,7 +35,7 @@ a user gets round to writing it, usually weeks and often months after the releas
 filed against; a crash report is sent by the reporter within days of the crash that produced it.
 So the reports a release has against it on the export date are only the share of its eventual
 reports that its age has allowed to arrive, and that share is not the same for the two sources.
-The releases already past day 365 are the ones that have finished collecting.
+The releases at least 365 days old are the ones that have finished collecting.
 
 A release's age in days sets how many complete thirty-day columns the export holds for it. An
 age of A days is A+1 days of history, today included, so it holds floor((A+1)/30) complete
@@ -50,7 +50,7 @@ the release date is 0 to N-1 days; the day-365 total counts opened lag 0 to 365 
 | product | the product |
 | export_date | the day the export was taken; no report after it is in the file |
 | horizon_days | the horizon support plans against, 365 days after each release |
-| forecast_releases | the releases support wants a number for, one of them already past day 365 but kept on the list for the quarterly comparison |
+| forecast_releases | the releases support wants a number for, one of them already finished collecting but kept on the list for the quarterly comparison |
 | tolerance_per_release | how far a forecast may be from the count a release reaches |
 | tolerance_total | how far the summed forecasts may be from the summed counts |
 | reports_per_10k_installs_to_date | the table from the release review, see below |

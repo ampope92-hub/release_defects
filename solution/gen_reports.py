@@ -296,8 +296,14 @@ def main():
         "tolerance_total": tol_total,
         "reports_per_10k_installs_to_date": per10k,
     }
+    # The two trackers serialise their policy differently: the shipped product's with two-space
+    # indentation and a space after each colon, the other product's with tab indentation and a
+    # tab after each colon. Both are JSON; a policy reader has to take a tab where JSON allows one.
     with open(out / "policy.json", "w") as fh:
-        json.dump(policy, fh, indent=2)
+        if a.hidden:
+            json.dump(policy, fh, indent="\t", separators=(",", ":\t"))
+        else:
+            json.dump(policy, fh, indent=2)
         fh.write("\n")
     kd = pathlib.Path(a.key_dir)
     kd.mkdir(parents=True, exist_ok=True)

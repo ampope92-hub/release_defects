@@ -10,6 +10,7 @@ Every bar here is stated in instruction.md, and the same bars apply to both runs
 """
 import csv
 import datetime
+import decimal
 import hashlib
 import json
 import os
@@ -56,6 +57,14 @@ def _load(path):
         return json.loads(text)
     except json.JSONDecodeError as e:
         pytest.fail(f"{path.name}: not valid JSON ({e}): {text[:200]!r}")
+
+
+def _load_as_printed(path):
+    """The same document, with every number kept as the text the run printed (a Decimal), so a
+    share's printed precision is known: 0.10 is exact to a hundredth, 0.1004 to a ten-thousandth."""
+    with _open(path) as fh:
+        text = fh.read()
+    return json.loads(text, parse_float=decimal.Decimal, parse_int=decimal.Decimal)
 
 
 def _key(path):
@@ -164,13 +173,15 @@ def test_wrong_argument_count_is_refused(arity):
     assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
 
 
-@pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000])
+@pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000, 99999999999999999999])
 def test_another_horizon_is_refused(horizon):
     """Handed a policy asking for a horizon other than 365 the program says so on stderr, writes
     nothing and exits 3. Both graded exports say 365, so without this the key could go unread.
     Several values are tried, not only one, so a program that special-cases a single sampled
-    number cannot pass by accident. Only what the instruction states is checked: stdout is not,
-    since the contract says nothing about it on this path."""
+    number cannot pass by accident; the last is a twenty-digit numeral, another horizon that no
+    32-bit integer holds, so a program that converts first and compares after has to refuse it
+    the same way rather than die on the conversion. Only what the instruction states is checked:
+    stdout is not, since the contract says nothing about it on this path."""
     status, wrote, _out, err = _probe(f"horizon_{horizon}")
     assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
     assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still left something in a writable location"
@@ -193,9 +204,13 @@ def _reports_by(data_dir, version, source, days):
 def test_forecast_is_the_count_over_the_reported_share(run_path, key_path, data_dir):
     """Each forecast is the release's reports so far, one source at a time, divided by the curve
     the report itself carries at that release's last whole thirty-day column, the two sources
-    added. The instruction states that step, and this holds the printed curve to being the one the
-    forecast was actually divided by, rather than a rounded copy of something else."""
-    r = _load(run_path)
+    added. The instruction states that step and says the forecast is checked against the printed
+    curve with each share taken as exact only to its last printed digit: a share printed as 0.10
+    stands for any divisor from 0.095 to 0.105, so the recomputed forecast is a range, not a
+    point, and the printed forecast has to fall inside it, within one report for the rounding to
+    an integer. A curve printed to two decimals passes as readily as one printed to ten; what
+    cannot pass is a forecast that was not divided by the curve beside it."""
+    r = _load_as_printed(run_path)
     a, fc = r["arrival_share"], r["reports_by_day_365"]
     rel, _ = _rows(data_dir)
     export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
@@ -204,18 +219,25 @@ def test_forecast_is_the_count_over_the_reported_share(run_path, key_path, data_
         k = min((age + 1) // STEP, len(AGES))
         assert k >= 1, f"{v} has no complete thirty-day column at {age} days, which the contract rules out"
         age_key = str(STEP * k)
-        want = 0.0
+        low, high = 0.0, 0.0
         for src in ("ticket", "crash"):
             n = _reports_by(data_dir, v, src, STEP * k)
             if n == 0:
                 continue
-            share = float(a[src][age_key])
-            assert share > 0, f"{run_path.name}: {v} has {src} reports but the curve is 0 at {age_key} days"
-            want += n / share
-        assert abs(fc[v] - want) <= 1.0, (
+            share = a[src][age_key]
+            assert isinstance(share, decimal.Decimal) and share > 0, (
+                f"{run_path.name}: {v} has {src} reports but the curve is {share!r} at {age_key} days"
+            )
+            # Half a unit in the last printed place: the widest the divisor could have been and
+            # still have printed as this figure.
+            half = decimal.Decimal(1).scaleb(share.as_tuple().exponent) / 2
+            lo, hi = float(share - half), float(share + half)
+            low += n / hi
+            high += n / lo if lo > 0 else float("inf")
+        assert low - 1.0 <= float(fc[v]) <= high + 1.0, (
             f"{run_path.name}: {v} forecasts {fc[v]}, but its reports over the first {age_key} days divided by "
-            f"the report's own curve at {age_key} days come to {want:.1f}; the printed curve is not the one the "
-            f"forecast used"
+            f"the report's own curve at {age_key} days, each share read to its last printed digit, come to "
+            f"between {low:.1f} and {high:.1f}; the printed curve is not the one the forecast used"
         )
 
 

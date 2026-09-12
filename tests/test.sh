@@ -145,10 +145,21 @@ run_once() {
   # scratch space and the collected directories alike (/app itself included, not only its known
   # subdirectories, so nothing dropped as a sibling of forecast/, out/ or data/ escapes the sweep
   # by sitting outside all three), and anything newly executable throws the output away.
+  # (The whole of /app is also listed in full, below, since the contract allows a run one new
+  # file there and no other.)
   scratch_list() {
     find /tmp /var/tmp /dev/shm /home/runner /app "$data" -xdev -type f -perm /111 2>/dev/null | sort -u
   }
+  # Under /app the sweep is not limited to executables: the instruction says the only new file
+  # a run may leave there is the JSON it was asked for, so the whole tree is listed on either
+  # side of the run, every path of every kind, and any new path other than that file discards
+  # the run's output. Scratch space and the runner's home are the program's own and stay held
+  # only to the executable rule above.
+  app_list() {
+    find /app -xdev -mindepth 1 2>/dev/null | sort -u
+  }
   scratch_list > /opt/scratch_before.txt
+  app_list > /opt/app_before.txt
   close_tools
   close_loader
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
@@ -165,10 +176,17 @@ run_once() {
   kill -KILL -- -"$pid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
   scratch_list > /opt/scratch_after.txt
+  app_list > /opt/app_after.txt
   if ! left="$(comm -13 /opt/scratch_before.txt /opt/scratch_after.txt)"; then left=""; fi
   if [ -n "$left" ]; then
     echo "the run left something executable in scratch space, so its output is discarded:"
     echo "$left"
+    rm -f "$asked"
+  fi
+  if ! added="$(comm -13 /opt/app_before.txt /opt/app_after.txt | grep -v -x -F -- "$asked")"; then added=""; fi
+  if [ -n "$added" ]; then
+    echo "the run left a new path under /app other than the file it was asked for, so its output is discarded:"
+    echo "$added"
     rm -f "$asked"
   fi
   if [ -L "$asked" ] || [ ! -f "$asked" ]; then
@@ -236,8 +254,8 @@ done
 
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
 # so without cases of its own nothing would stop a program that never reads the key. Several other
-# values are tried, close to 365 and far from it, so a program that special-cases the one sampled
-# number cannot pass by accident.
+# values are tried, close to 365, far from it and one too long for any integer type, so a program
+# that special-cases the one sampled number cannot pass by accident.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
@@ -257,7 +275,9 @@ run_horizon_probe() {
   probe_args "horizon_${value}" "$dir" /app/out/argprobe.json
   rm -rf "$dir"
 }
-for h in 30 90 364 366 400 1000; do
+# The last value is a twenty-digit numeral: another horizon, and one no 32-bit integer holds, so
+# a program that converts the figure before comparing it has to refuse it rather than die on it.
+for h in 30 90 364 366 400 1000 99999999999999999999; do
   run_horizon_probe "$h"
 done
 
