@@ -12,5 +12,8 @@ set -euo pipefail
 # releases that have the reporter, and the two are added. See forecast.adb alongside.
 install -m 644 "$(dirname "$0")/forecast.adb" /app/forecast/src/forecast.adb
 bash /app/forecast/build.sh
+# The build script has done its job; it is ours, not part of the binary's own project, so it
+# does not stay executable for the run that follows.
+chmod -x /app/forecast/build.sh
 mkdir -p /app/out
 /app/forecast/forecast /app/data /app/out/forecast.json

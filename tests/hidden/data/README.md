@@ -7,7 +7,10 @@ Three files from the tracker, covering every release of the 7.x line.
 One row per release: `version`, `release_date`, `installs_first_90_days` (installs counted over
 the release's first 90 days, the figure the review uses as a release's size) and
 `crash_reporter`, `yes` for a release that ships the in-app crash reporter, which went in with
-7.16. Releases before it only ever get reports through the support desk.
+7.16. One earlier release, 7.15, ran a short pilot with an early build that phoned crash logs
+home in slow weekly batches rather than within days, so its own `crash_reporter` still reads no.
+The arrival curve's crash cohort is the releases marked `yes`, not the releases that happen to
+carry a crash row.
 
 ## reports.csv
 
@@ -47,7 +50,7 @@ the release date is 0 to N-1 days; the day-365 total counts opened lag 0 to 365 
 | product | the product |
 | export_date | the day the export was taken; no report after it is in the file |
 | horizon_days | the horizon support plans against, 365 days after each release |
-| forecast_releases | the releases support wants a number for |
+| forecast_releases | the releases support wants a number for, one of them already past day 365 but kept on the list for the quarterly comparison |
 | tolerance_per_release | how far a forecast may be from the count a release reaches |
 | tolerance_total | how far the summed forecasts may be from the summed counts |
 | reports_per_10k_installs_to_date | the table from the release review, see below |

@@ -108,7 +108,11 @@ def chain_ladder(tri):
 
 def by_arrival_share(tri):
     """What forecast.adb does: pool the finished releases into one curve per column, round each
-    share to four places, and divide a young release's last complete count by the share there."""
+    share to four places, and divide a young release's last complete count by the share there.
+    A release already past the horizon still forecasts off the twelfth (360-day) column, never
+    off the reserved day-365 slot that only feeds the pool: the cap on how many columns a
+    forecast may use and the cohort question of whether a release has finished collecting are
+    two different rules, exactly as forecast.adb keeps Complete and Finished separate fields."""
     finished = [row for row in tri.values() if len(row) == COLUMNS]
     ult = sum(row[-1] for row in finished)
     share = [round(sum(row[p] for row in finished) / ult, 4) if ult else 1.0 for p in range(COLUMNS)]
@@ -117,7 +121,7 @@ def by_arrival_share(tri):
         if not row:
             out[v] = 0.0
             continue
-        k = len(row) - 1
+        k = min(len(row) - 1, COLUMNS - 2)
         out[v] = row[k] / share[k] if share[k] > 0 else 0.0
     return out
 

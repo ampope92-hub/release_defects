@@ -145,12 +145,13 @@ def _probe(tag):
     return (int(read("status").strip()), read("wrote").strip(), read("out"), read("err"))
 
 
-@pytest.mark.parametrize("arity", [0, 1, 3, 4, 5, 6, 7, 8])
+@pytest.mark.parametrize("arity", [0, 1, 3, 4, 5, 6, 7, 8, 16, 40])
 def test_wrong_argument_count_is_refused(arity):
     """Every wrong argument count, not just a couple of them, gets something on stderr, an empty
-    stdout, exit 2 and no file. test.sh runs every arity from 0 to 8 other than 2 before the
-    graded runs. The instruction promises this for any count other than two, so the whole spread
-    is probed rather than a few sampled shapes a verifier-aware program could special-case.
+    stdout, exit 2 and no file. test.sh runs a spread from 0 up through 40, small counts and a
+    couple of large ones, before the graded runs. The instruction promises this for any count
+    other than two, so a program that special-cases a handful of small counts near two, and
+    answers differently once the count grows, is still caught.
 
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an

@@ -167,8 +167,9 @@ run_once() {
 
 # The instruction says what the program does when it is handed anything other than two
 # arguments: a usage line on standard error, nothing on standard output, exit 2, no file written.
-# It promises that for any count other than two, not only one or two of them, so every arity from
-# 0 to 8 other than 2 is probed below, not a handful. "No file written" is read from a snapshot of
+# It promises that for any count other than two, not only one or two of them, so a spread from
+# 0 up through 40, including a run of consecutive small counts and a couple of large ones, is
+# probed below, not a handful clustered near two. "No file written" is read from a snapshot of
 # every writable location the process can reach, before and after the call, not only /app/out, so
 # a file dropped in the project directory, scratch space or the runner's home during an invalid
 # invocation is still caught.
@@ -203,7 +204,7 @@ probe_args() {
 }
 
 echo "=== what it does when the argument count is wrong ==="
-for n in 0 1 3 4 5 6 7 8; do
+for n in 0 1 3 4 5 6 7 8 16 40; do
   case "$n" in
     0) probe_args "argc_0" ;;
     1) probe_args "argc_1" /app/data ;;
