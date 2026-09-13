@@ -29,6 +29,7 @@ SHIPPED_SHA = {
     "releases.csv": "1b498bfb45113b5a8fe684b7d9401b2f6bc6c8f7be536666c83cbe9a6c5c63df",
     "reports.csv": "09dd9079c2d47da8d99bc23d2506f77915b78f04e78dd3baa3cca9fcda10e2f7",
     "policy.json": "7910b56b680dd8c47e3430fd27c6cc7278f4c72b558f66bba07372d3b13dd177",
+    "README.md": "1d95cf9b9e88d405282601db619712910e7656672dd8e212aff146e22ff1df61",
 }
 
 RUNS = [
@@ -134,15 +135,17 @@ def _true_share(data_dir, source):
 
 
 def test_shipped_export_unmodified():
-    """The three files in /app/data are byte-identical to what shipped."""
+    """Every file in /app/data, including the README, is byte-identical to what shipped."""
     for name, sha in SHIPPED_SHA.items():
-        assert _sha(SHIPPED_DATA / name) == sha, f"{name} was altered"
+        path = SHIPPED_DATA / name
+        assert path.exists(), f"{name} is gone from /app/data"
+        assert _sha(path) == sha, f"{name} was altered"
 
 
 def test_nothing_was_added_to_the_export():
-    """/app/data holds the three files and the README and nothing else. The instruction says to
-    leave the directory alone, and a file dropped in beside them would otherwise go unnoticed."""
-    want = set(SHIPPED_SHA) | {"README.md"}
+    """/app/data holds exactly the shipped files and nothing else. The instruction says the whole
+    directory stays as it arrived, and a file dropped in beside them would otherwise go unnoticed."""
+    want = set(SHIPPED_SHA)
     got = {p.name for p in SHIPPED_DATA.iterdir()}
     assert got == want, f"/app/data holds {sorted(got)}, not {sorted(want)}"
 
