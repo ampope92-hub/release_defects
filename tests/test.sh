@@ -15,6 +15,17 @@ as_runner() {
   setpriv --clear-groups --no-new-privs --reuid runner --regid runner "$@"
 }
 
+# A fresh, unpredictable basename for one run's output file, so the two graded runs and every
+# argument-count and horizon probe ask for a name drawn from the very same generator. Nothing in
+# the basename can tell a probe apart from a graded run any more (a fixed name like argprobe.json
+# used to do exactly that; see the cheat_probe_basename arm).
+rand_name() {
+  local hex
+  hex="$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+  [ -n "$hex" ] || hex="$RANDOM$RANDOM$RANDOM$RANDOM"
+  printf '%s.json' "$hex"
+}
+
 # The shipped tests/ directory lands here at runtime, so the verifier's own code sits under
 # /tests just as agent-authored code is about to run. Close it to the build user first: root still
 # reads it, `runner` cannot traverse it. If it is still reachable the run is abandoned with reward
@@ -117,10 +128,12 @@ rm -rf /app/build_iso
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
 # build user, with every tool closed, from /app/forecast, and move what it wrote to a root-only
 # path. The output path is the second argument the instruction documents, and the two runs ask for
-# different names, so a program that ignores the argument and writes a fixed file is caught rather
-# than graded. Only a regular file is ever staged: the binary cannot read the keys, but it can drop
-# a symlink at the output path pointing into /opt, and pytest, running as root, would then read the
-# verifier's own truth back as the agent's figures.
+# a different, freshly randomized name each (rand_name, the same generator every probe below uses
+# too), so a program that ignores the argument and writes a fixed file is caught rather than
+# graded, and nothing about the name itself tells this run apart from a probe. Only a regular file
+# is ever staged: the binary cannot read the keys, but it can drop a symlink at the output path
+# pointing into /opt, and pytest, running as root, would then read the verifier's own truth back
+# as the agent's figures.
 run_once() {
   local data="$1" asked="$2" out="$3" pid
   rm -f "$asked"
@@ -152,11 +165,17 @@ run_once() {
   }
   # Under /app the sweep is not limited to executables: the instruction says the only new file
   # a run may leave there is the JSON it was asked for, so the whole tree is listed on either
-  # side of the run, every path of every kind, and any new path other than that file discards
-  # the run's output. Scratch space and the runner's home are the program's own and stay held
-  # only to the executable rule above.
+  # side of the run, every new FILE of any kind (a regular file, a symlink, a fifo, a device) other
+  # than that one discards the run's output. A plain directory is not a file and is not listed,
+  # matching the instruction's own wording. An empty directory left behind between the two graded
+  # runs is not a useful signal either: the program is handed the data directory itself as its
+  # first argument, so it can already tell the shipped export from the other product's straight
+  # from policy.json or releases.csv, for free, without needing anywhere to leave a marker: a
+  # directory would add no capability a plain read of its own input does not already give it.
+  # Scratch space and the runner's home are the program's own and stay held only to the
+  # executable rule above.
   app_list() {
-    find /app -xdev -mindepth 1 2>/dev/null | sort -u
+    find /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
   }
   scratch_list > /opt/scratch_before.txt
   app_list > /opt/app_before.txt
@@ -212,12 +231,20 @@ snapshot_writable() {
 }
 probe_args() {
   local tag="$1"; shift
-  rm -f /app/out/argprobe.json
+  # The second positional argument, when there is one, is the output path this call asked for
+  # (a freshly randomized name from the caller, same generator the graded runs use); it is only
+  # ever cleaned up here, never chosen here, so a probe's basename is decided the same way a
+  # graded run's is and this function cannot itself reintroduce a fixed one.
+  local outpath="${2:-}"
+  [ -n "$outpath" ] && rm -f "$outpath"
   snapshot_writable > "/opt/argprobe_${tag}_before.txt"
   close_tools
-  setsid \
-    setpriv --clear-groups --no-new-privs --reuid runner --regid runner \
-    env -C /app/forecast HOME=/home/runner /app/forecast/forecast "$@" \
+  # Same launch chain as run_once: a root shell sets cwd and HOME, then execs setpriv, whose own
+  # first exec is the forecast binary. Earlier this ran the binary through setpriv -> env instead,
+  # so a graded run and a probe run reached the binary through different parent processes; now
+  # both go through the identical chain and only the policy content (or the horizon value, for a
+  # horizon probe) differs between them.
+  setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$@"' _ "$@" \
     > "/opt/argprobe_${tag}_out.txt" 2> "/opt/argprobe_${tag}_err.txt" &
   local ppid=$!
   wait "$ppid"
@@ -233,7 +260,7 @@ probe_args() {
   else
     echo wrote > "/opt/argprobe_${tag}_wrote.txt"
   fi
-  rm -f /app/out/argprobe.json
+  [ -n "$outpath" ] && rm -f "$outpath"
   echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written"
 }
 
@@ -247,7 +274,7 @@ for n in 0 1 3 4 5 6 7 8 16 40; do
       for ((e = 3; e <= n; e++)); do
         extras+=("extra$((e - 2))")
       done
-      probe_args "argc_${n}" /app/data /app/out/argprobe.json "${extras[@]}"
+      probe_args "argc_${n}" /app/data "/app/out/$(rand_name)" "${extras[@]}"
       ;;
   esac
 done
@@ -260,6 +287,8 @@ done
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
 # would let a program single out the probe by argv and answer it differently from a graded run.
+# The output path asked for is a fresh rand_name too, the same generator a graded run gets, not
+# the fixed argprobe.json this used to be: nothing about either name says which kind of run it is.
 echo "=== what it does when the policy asks for another horizon ==="
 run_horizon_probe() {
   local value="$1" dir
@@ -272,7 +301,7 @@ run_horizon_probe() {
   # Root keeps ownership: the binary only has to read the export, and a directory it owned would
   # let it restore write bits and rewrite the policy from inside the run.
   chmod -R a-w,a+rX "$dir"
-  probe_args "horizon_${value}" "$dir" /app/out/argprobe.json
+  probe_args "horizon_${value}" "$dir" "/app/out/$(rand_name)"
   rm -rf "$dir"
 }
 # The last value is a twenty-digit numeral: another horizon, and one no 32-bit integer holds, so
@@ -285,7 +314,7 @@ chown root:root /opt/argprobe_*.txt 2>/dev/null || true
 chmod 600 /opt/argprobe_*.txt 2>/dev/null || true
 
 echo "=== the export that shipped in the agent's image ==="
-run_once /app/data /app/out/forecast.json /opt/run_shipped.json
+run_once /app/data "/app/out/$(rand_name)" /opt/run_shipped.json
 
 # Then the other product. Its export is staged only now, after the build has finished and every
 # process it started is gone, into a fresh directory the binary has never seen, so nothing that
@@ -297,7 +326,7 @@ cp /opt/hidden/data/*.csv /opt/hidden/data/policy.json /opt/hidden/data/README.m
 # change the export it is being graded on.
 chmod -R a-w,a+rX "$staged"
 echo "=== the same binary on the other product's export ==="
-run_once "$staged" /app/out/forecast_second.json /opt/run_hidden.json
+run_once "$staged" "/app/out/$(rand_name)" /opt/run_hidden.json
 rm -rf "$staged"
 
 # Nothing the agent started may be alive while pytest runs or while the reward is written.
