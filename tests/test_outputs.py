@@ -152,30 +152,38 @@ def test_nothing_was_added_to_the_export():
 
 def _probe(tag):
     """What one probe run in test.sh did: exit status, whether the output path it was given (if
-    any) exists afterward, and the two output streams. "wrote" answers only for the output path
-    named in the call; a call of zero or one arguments names no output path, so test.sh always
-    records "nothing" for those and there is nothing else to check there."""
+    any) exists afterward, the two output streams, and any leftover-executable/new-app-file
+    violation test.sh's check_after found for this call specifically. "wrote" answers only for
+    the output path named in the call; a call of zero or one arguments names no output path, so
+    test.sh always records "nothing" for those and there is nothing else to check there. Every
+    probe is bracketed by the same before/after check a graded run gets, not only the two graded
+    runs, so a probe can no longer plant something a later call's own baseline would treat as
+    having always been there."""
     read = lambda part: pathlib.Path(f"/opt/argprobe_{tag}_{part}.txt").read_text()
-    return (int(read("status").strip()), read("wrote").strip(), read("out"), read("err"))
+    return (
+        int(read("status").strip()), read("wrote").strip(), read("out"), read("err"),
+        read("violation").strip(),
+    )
 
 
 @pytest.mark.parametrize("arity", [0, 1, 3, 4, 5, 6, 7, 8, 16, 40])
 def test_wrong_argument_count_is_refused(arity):
     """Every wrong argument count, not just a couple of them, gets something on stderr, an empty
     stdout, exit 2 and no output file created. test.sh runs a spread from 0 up through 40, small
-    counts and a couple of large ones, before the graded runs. The instruction promises this for
-    any count other than two, so a program that special-cases a handful of small counts near two,
-    and answers differently once the count grows, is still caught.
+    counts and a couple of large ones, before the graded runs; the instruction states that same
+    spread rather than claiming every count other than two is exercised, so what is checked here
+    is exactly what is promised.
 
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an
     unrelated but non-empty message would still be gaming the letter of the contract, but the
     contract has no fixed text to hold it to, so nothing narrower than non-empty is enforceable."""
-    status, wrote, out, err = _probe(f"argc_{arity}")
+    status, wrote, out, err, violation = _probe(f"argc_{arity}")
     assert status == 2, f"{arity} arguments gave exit status {status}, not 2"
     assert wrote == "nothing", f"{arity} arguments still created the output file it was told to use"
     assert out.strip() == "", f"{arity} arguments put this on stdout: {out[:200]!r}"
     assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
+    assert violation == "", f"{arity} arguments {violation}"
 
 
 @pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000, 99999999999999999999])
@@ -187,10 +195,11 @@ def test_another_horizon_is_refused(horizon):
     that no 32-bit integer holds, so a program that converts first and compares after has to
     refuse it the same way rather than die on the conversion. Only what the instruction states is
     checked: stdout is not, since the contract says nothing about it on this path."""
-    status, wrote, _out, err = _probe(f"horizon_{horizon}")
+    status, wrote, _out, err, violation = _probe(f"horizon_{horizon}")
     assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
     assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still created the output file it was told to use"
     assert err.strip() != "", f"a {horizon} day horizon it cannot answer passed without a word on stderr"
+    assert violation == "", f"a {horizon} day horizon {violation}"
 
 
 def _reports_by(data_dir, version, source, days):

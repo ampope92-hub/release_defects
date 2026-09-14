@@ -93,6 +93,13 @@ trap 'open_tools' EXIT
 # given, not by scanning what the project happens to contain.
 rm -rf /app/forecast /app/build_iso
 cp -a /opt/forecast_pristine /app/forecast
+# Only Ada source ever survives under src/: an ordinary GNAT project built with the documented
+# `gnatmake -I src` command needs nothing else there, and the instruction now says so. Anything
+# else the agent left there is deleted now, before the run even starts, rather than merely
+# losing its read and execute bits later -- so there is nothing left on disk for the later
+# point-in-time checks to have to catch. /opt/forecast_pristine, the copy the build step below
+# still reads from, keeps the original files; only the collected working copy is stripped.
+find /app/forecast/src -mindepth 1 -maxdepth 1 -type f ! -name '*.adb' ! -name '*.ads' -delete 2>/dev/null || true
 mkdir -p /app/build_iso/src
 find /app/forecast/src -maxdepth 1 -type f \( -name '*.adb' -o -name '*.ads' \) \
      -exec cp -- {} /app/build_iso/src/ \;
@@ -118,6 +125,60 @@ else
 fi
 rm -rf /app/build_iso
 
+# Closing the project and the system paths still leaves scratch space the build user can write
+# to and then execute from. Ada reaches libc through Interfaces.C, which is part of the standard
+# library, so a program could carry a helper as bytes, drop it in /tmp, mark it executable and
+# run it. The task says the numbers come out of the Ada, so every single invocation below -- the
+# two graded runs AND every argument-count and horizon probe, not only the two graded runs -- is
+# bracketed by the same pair of checks, scratch space and the collected directories alike (/app
+# itself included, not only its known subdirectories, so nothing dropped as a sibling of
+# forecast/, out/ or data/ escapes the sweep by sitting outside all three), and anything newly
+# executable throws that invocation's own output away. A probe used to be checked only for the
+# output path it named, which let something planted during a probe sit unnoticed until a LATER
+# snapshot's "before" picture, since that picture was only ever taken right before the two graded
+# runs; every invocation now takes and checks its own before/after pair, so nothing has anywhere
+# to hide between one call and the next.
+scratch_list() {
+  find /tmp /var/tmp /dev/shm /home/runner /app -xdev -type f -perm /111 2>/dev/null | sort -u
+}
+# Under /app the sweep is not limited to executables: the instruction says the only new file an
+# invocation may leave there is the JSON it was asked for (or nothing at all, for a call that
+# named no output path), so the whole tree is listed on either side of every call, and every new
+# FILE of any kind (a regular file, a symlink, a fifo, a device) other than the one it was allowed
+# discards its output. A plain directory is not a file and is not listed, matching the
+# instruction's own wording; a probe's own staging directory is created before its bracket opens
+# and removed only after it closes, so it never looks new to this. Scratch space and the runner's
+# home are the program's own and stay held only to the executable rule above.
+app_list() {
+  find /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
+}
+snapshot_before() {
+  scratch_list > /opt/scratch_before.txt
+  app_list > /opt/app_before.txt
+}
+# check_after <keep-path>: call once tools are reopened. <keep-path> is the one path this
+# invocation was allowed to write (empty when it named none). Prints a one-line description of
+# any violation, empty when clean, and removes whatever it found immediately, so nothing an
+# invocation leaves behind can ever look like it was "already there" to the NEXT invocation's own
+# before picture.
+check_after() {
+  local keep="$1" left added desc=""
+  scratch_list > /opt/scratch_after.txt
+  app_list > /opt/app_after.txt
+  if ! left="$(comm -13 /opt/scratch_before.txt /opt/scratch_after.txt)"; then left=""; fi
+  if [ -n "$left" ]; then
+    desc="left something executable in scratch space ($left)"
+    printf '%s\n' "$left" | while IFS= read -r f; do [ -n "$f" ] && rm -f -- "$f"; done
+  fi
+  if ! added="$(comm -13 /opt/app_before.txt /opt/app_after.txt | grep -v -x -F -- "$keep")"; then added=""; fi
+  if [ -n "$added" ]; then
+    [ -n "$desc" ] && desc="$desc; "
+    desc="${desc}left a new path under /app other than the file it was asked for ($added)"
+    printf '%s\n' "$added" | while IFS= read -r f; do [ -n "$f" ] && rm -f -- "$f"; done
+  fi
+  printf '%s' "$desc"
+}
+
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
 # build user, with every tool closed, from /app/forecast, and move what it wrote to a root-only
 # path. The output path is the second argument the instruction documents, and the two runs ask for
@@ -128,7 +189,7 @@ rm -rf /app/build_iso
 # pointing into /opt, and pytest, running as root, would then read the verifier's own truth back
 # as the agent's figures.
 run_once() {
-  local data="$1" asked="$2" out="$3" pid
+  local data="$1" asked="$2" out="$3" pid violation
   rm -f "$asked"
   # Closing the system paths stops the binary shelling out to a python or an awk, but the project
   # directory is the agent's own and is collected as an artifact, so an executable helper shipped
@@ -144,34 +205,7 @@ run_once() {
   # caught by the check that /app/data holds the shipped files and nothing else.
   find /app/forecast /app/out -type f \
        ! -samefile /app/forecast/forecast -exec chmod a-r {} + 2>/dev/null || true
-  # Closing the project and the system paths still leaves scratch space the build user can write
-  # to and then execute from. Ada reaches libc through Interfaces.C, which is part of the standard
-  # library, so a program could carry a helper as bytes, drop it in /tmp, mark it executable and
-  # run it. The task says the numbers come out of the Ada, so the run is scanned on both sides,
-  # scratch space and the collected directories alike (/app itself included, not only its known
-  # subdirectories, so nothing dropped as a sibling of forecast/, out/ or data/ escapes the sweep
-  # by sitting outside all three), and anything newly executable throws the output away.
-  # (The whole of /app is also listed in full, below, since the contract allows a run one new
-  # file there and no other.)
-  scratch_list() {
-    find /tmp /var/tmp /dev/shm /home/runner /app "$data" -xdev -type f -perm /111 2>/dev/null | sort -u
-  }
-  # Under /app the sweep is not limited to executables: the instruction says the only new file
-  # a run may leave there is the JSON it was asked for, so the whole tree is listed on either
-  # side of the run, every new FILE of any kind (a regular file, a symlink, a fifo, a device) other
-  # than that one discards the run's output. A plain directory is not a file and is not listed,
-  # matching the instruction's own wording. An empty directory left behind between the two graded
-  # runs is not a useful signal either: the program is handed the data directory itself as its
-  # first argument, so it can already tell the shipped export from the other product's straight
-  # from policy.json or releases.csv, for free, without needing anywhere to leave a marker: a
-  # directory would add no capability a plain read of its own input does not already give it.
-  # Scratch space and the runner's home are the program's own and stay held only to the
-  # executable rule above.
-  app_list() {
-    find /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
-  }
-  scratch_list > /opt/scratch_before.txt
-  app_list > /opt/app_before.txt
+  snapshot_before
   close_tools
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
   # hands off with exec to setpriv, whose own exec is the binary itself. The dynamic loader is
@@ -186,18 +220,9 @@ run_once() {
   kill -TERM -- -"$pid" 2>/dev/null || true
   kill -KILL -- -"$pid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
-  scratch_list > /opt/scratch_after.txt
-  app_list > /opt/app_after.txt
-  if ! left="$(comm -13 /opt/scratch_before.txt /opt/scratch_after.txt)"; then left=""; fi
-  if [ -n "$left" ]; then
-    echo "the run left something executable in scratch space, so its output is discarded:"
-    echo "$left"
-    rm -f "$asked"
-  fi
-  if ! added="$(comm -13 /opt/app_before.txt /opt/app_after.txt | grep -v -x -F -- "$asked")"; then added=""; fi
-  if [ -n "$added" ]; then
-    echo "the run left a new path under /app other than the file it was asked for, so its output is discarded:"
-    echo "$added"
+  violation="$(check_after "$asked")"
+  if [ -n "$violation" ]; then
+    echo "the run $violation, so its output is discarded"
     rm -f "$asked"
   fi
   if [ -L "$asked" ] || [ ! -f "$asked" ]; then
@@ -212,20 +237,22 @@ run_once() {
 
 # The instruction says what the program does when it is handed anything other than two
 # arguments: a usage line on standard error, nothing on standard output, exit 2, no output file
-# created. It promises that for any count other than two, not only one or two of them, so a
-# spread from 0 up through 40, including a run of consecutive small counts and a couple of large
-# ones, is probed below, not a handful clustered near two. The check is only of the output path
-# the call actually names (the second argument, when there is one, exactly as the graded runs
-# use it): a run of zero or one arguments names no output path at all, so there is nothing to
-# check there beyond exit status and stderr.
+# created. It promises that for a spread of counts, from zero through forty, so a spread from 0
+# up through 40, including a run of consecutive small counts and a couple of large ones, is
+# probed below, not a handful clustered near two. The check is only of the output path the call
+# actually names (the second argument, when there is one, exactly as the graded runs use it): a
+# run of zero or one arguments names no output path at all, so there is nothing to check there
+# beyond exit status and stderr -- and, as of this round, the same leftover-executable and
+# new-app-file bracket every graded run gets (see check_after above).
 probe_args() {
   local tag="$1"; shift
   # The second positional argument, when there is one, is the output path this call asked for
   # (a freshly randomized name from the caller, same generator the graded runs use); it is only
   # ever cleaned up here, never chosen here, so a probe's basename is decided the same way a
   # graded run's is and this function cannot itself reintroduce a fixed one.
-  local outpath="${2:-}"
+  local outpath="${2:-}" violation
   [ -n "$outpath" ] && rm -f "$outpath"
+  snapshot_before
   close_tools
   # Same launch chain as run_once: a root shell sets cwd and HOME, then execs setpriv, whose own
   # first exec is the forecast binary. Earlier this ran the binary through setpriv -> env instead,
@@ -242,13 +269,15 @@ probe_args() {
   kill -KILL -- -"$ppid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
   echo "$pstatus" > "/opt/argprobe_${tag}_status.txt"
+  violation="$(check_after "$outpath")"
+  printf '%s' "$violation" > "/opt/argprobe_${tag}_violation.txt"
   if [ -n "$outpath" ] && { [ -e "$outpath" ] || [ -L "$outpath" ]; }; then
     echo wrote > "/opt/argprobe_${tag}_wrote.txt"
   else
     echo nothing > "/opt/argprobe_${tag}_wrote.txt"
   fi
   [ -n "$outpath" ] && rm -f "$outpath"
-  echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written"
+  echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written${violation:+, VIOLATION: $violation}"
 }
 
 echo "=== what it does when the argument count is wrong ==="
