@@ -59,8 +59,9 @@ chmod -R go-w /opt/forecast_pristine
 # compiler and shells are here because the tool has to be built. All of them, and every other
 # executable on the system paths, are closed to the build user for the seconds the binary runs,
 # so the forecast cannot come out of a python or awk the binary shells out to, and reopened
-# straight after. Root is unaffected. A GNAT binary needs no launcher: it links the Ada runtime
-# as a shared library, which lives outside the executable paths and stays readable.
+# straight after. Root is unaffected. A GNAT binary needs no launcher of its own: it links the
+# Ada runtime as a shared library, resolved by the dynamic loader below, not by anything in this
+# list.
 TOOLS="$( { find /usr/local/bin /usr/local/sbin /usr/bin /bin /usr/sbin /sbin -xdev -type f -perm /111 2>/dev/null;
              for l in $(find /usr/local/bin /usr/bin /bin -xdev -type l 2>/dev/null); do t="$(readlink -f "$l")"; [ -f "$t" ] && echo "$t"; done; } \
   | sort -u | grep -v -E 'ld-linux|/ld\.so$' | grep -v -x -F -e "$(readlink -f /usr/bin/env)")"
@@ -74,12 +75,23 @@ open_tools()  { for f in $TOOLS; do chmod 755 "$f" 2>/dev/null || true; done; }
 
 # The dynamic loader. A native helper the program drops in scratch and marks executable needs the
 # loader to run, and closing every interpreter does not touch it, so for the two graded runs the
-# loader is closed to the build user too. It cannot simply go in TOOLS: a dynamically linked program
-# whose loader is unreadable does not start at all, the built binary included. The graded runs get
-# around that by launching the binary as setpriv's very first exec, which the kernel maps before the
-# credential change fully takes effect, so the binary itself loads while every later exec it makes,
-# an interpreter or a native helper alike, is held to the closed loader and cannot run. Root keeps
-# access throughout (750 is root-readable), so the launch's own shell and setpriv are unaffected.
+# loader is closed to the build user too. It cannot simply go in TOOLS: naively closing it would
+# also block the graded binary's own launch, since a dynamically linked program whose loader is
+# unreadable does not start. It does not, in fact, block it, and this is measured, not assumed:
+# setpriv changes its real/effective/saved credentials with setresuid/setresgid and then calls
+# execve on the target in the same syscall-adjacent step, and the kernel resolves that target's
+# own PT_INTERP while still finishing that transition, so the very first exec setpriv performs
+# loads clean even with the loader at 750 root-owned. A process already running as the build user
+# that goes on to exec some other dynamically linked binary afterward is not in that transition
+# and gets an ordinary EACCES on the same closed loader, exactly like any other file closed to it;
+# checked directly in this image both ways (2026-09-14: a gnatmake-built binary launched as
+# setpriv's own exec starts and runs its own logic with the loader at 750; the same binary,
+# copied to scratch and exec'd from a process already running as the build user, an already-
+# runner /bin/bash in one check and this task's own cheat_native_helper arm in the other, gets
+# Permission denied on the loader and never starts). The loader_smoke check below re-proves the
+# first half of that on every run, against the actual binary just built, rather than resting it
+# on this comment or on the day it was measured. Root keeps access throughout (750 is
+# root-readable), so the launch's own shell and setpriv are unaffected.
 LOADER="$(readlink -f "$(ldd /bin/ls 2>/dev/null | grep -o '/[^ ]*ld-linux[^ ]*' | head -1)" 2>/dev/null)"
 [ -e "$LOADER" ] || LOADER=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
 close_loader() { chmod 750 "$LOADER" 2>/dev/null || true; }
@@ -124,6 +136,32 @@ else
   echo "the collected sources did not build into /app/forecast/forecast"
 fi
 rm -rf /app/build_iso
+
+# loader_smoke: prove, on the binary this run just built, the fact the comment above states --
+# that closing the loader before this exact launch chain does not stop the graded binary itself
+# from starting -- instead of resting the two graded runs on the comment being right. Zero
+# arguments reaches the program's own usage line (exit 2) if it actually started; a launch EACCES
+# instead surfaces as setpriv's or the shell's own exec failure or a loader complaint on stderr,
+# never that usage text, so the two are not confusable. If a submission's sources did not build at
+# all there is nothing here to check; that case already fails on its own further down.
+if [ -x /app/forecast/forecast ]; then
+  close_loader
+  setsid bash -c 'exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast' \
+    >/opt/loader_smoke_out.txt 2>/opt/loader_smoke_err.txt
+  smoke_status=$?
+  open_loader
+  if [ "$smoke_status" -eq 126 ] || [ "$smoke_status" -eq 127 ] \
+     || grep -qi 'permission denied' /opt/loader_smoke_err.txt 2>/dev/null; then
+    echo "FATAL: closing the dynamic loader blocks this build's own graded binary from launching"
+    echo "(loader_smoke exit $smoke_status); this image no longer gives setpriv's own exec the"
+    echo "transition window the two graded runs below depend on, so they would misgrade every"
+    echo "submission rather than this one. Abandoning the run instead of grading it."
+    cat /opt/loader_smoke_err.txt
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
+  fi
+  echo "loader_smoke: the built binary launches under the closed loader (exit $smoke_status, its own usage line for zero arguments)"
+fi
 
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
 # build user, with every tool closed, from /app/forecast, and move what it wrote to a root-only
@@ -182,9 +220,10 @@ run_once() {
   close_tools
   close_loader
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
-  # hands off with exec to setpriv, whose first exec is the binary itself: the binary loads through
-  # the first-exec window while anything it spawns afterwards, with the loader closed, cannot. The
-  # shell and setpriv run as root, so the closed loader does not touch them.
+  # hands off with exec to setpriv, whose own exec is the binary itself: the binary loads through
+  # the transition window described above (and re-proved by loader_smoke on this exact build)
+  # while anything it spawns afterwards, with the loader closed, is an ordinary already-runner
+  # exec and cannot. The shell and setpriv run as root, so the closed loader does not touch them.
   setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$1" "$2"' _ "$data" "$asked" &
   pid=$!
   wait "$pid"
