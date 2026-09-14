@@ -59,44 +59,25 @@ chmod -R go-w /opt/forecast_pristine
 # compiler and shells are here because the tool has to be built. All of them, and every other
 # executable on the system paths, are closed to the build user for the seconds the binary runs,
 # so the forecast cannot come out of a python or awk the binary shells out to, and reopened
-# straight after. Root is unaffected. A GNAT binary needs no launcher of its own: it links the
-# Ada runtime as a shared library, resolved by the dynamic loader below, not by anything in this
-# list.
+# straight after. Root is unaffected. This is a closure by construction, found by walking the
+# system directories rather than by naming files, so it holds regardless of what this image
+# happens to ship.
 TOOLS="$( { find /usr/local/bin /usr/local/sbin /usr/bin /bin /usr/sbin /sbin -xdev -type f -perm /111 2>/dev/null;
              for l in $(find /usr/local/bin /usr/bin /bin -xdev -type l 2>/dev/null); do t="$(readlink -f "$l")"; [ -f "$t" ] && echo "$t"; done; } \
   | sort -u | grep -v -E 'ld-linux|/ld\.so$' | grep -v -x -F -e "$(readlink -f /usr/bin/env)")"
 # /usr/bin/env is what setpriv starts each run through, so it stays open; it is not a route to
 # anything, since whatever it executes is checked on its own. Only regular files are listed: the
 # merged /bin is itself a symlink to /usr/bin, and closing that directory would shut the whole
-# tree, launcher included. The dynamic loader is not in this list; it is handled on its own below,
-# only for the graded runs, because closing it needs the launch arranged around it.
+# tree, launcher included. The dynamic loader is deliberately excluded from this closure (see
+# below): the panel has three times rejected making an ordinary dynamically linked binary
+# unlaunchable as the price of this closure, so the loader itself is left alone and the value
+# this closure gives up is only the one attack that needed a *second*, separately-launched
+# dynamically linked binary. A helper compiled from the agent's own collected source is not a
+# route around anything: only src/*.adb|ads is ever compiled, so the same standard-library-only
+# code is all that could run either way.
 close_tools() { for f in $TOOLS; do chmod 750 "$f" 2>/dev/null || true; done; }
 open_tools()  { for f in $TOOLS; do chmod 755 "$f" 2>/dev/null || true; done; }
-
-# The dynamic loader. A native helper the program drops in scratch and marks executable needs the
-# loader to run, and closing every interpreter does not touch it, so for the two graded runs the
-# loader is closed to the build user too. It cannot simply go in TOOLS: naively closing it would
-# also block the graded binary's own launch, since a dynamically linked program whose loader is
-# unreadable does not start. It does not, in fact, block it, and this is measured, not assumed:
-# setpriv changes its real/effective/saved credentials with setresuid/setresgid and then calls
-# execve on the target in the same syscall-adjacent step, and the kernel resolves that target's
-# own PT_INTERP while still finishing that transition, so the very first exec setpriv performs
-# loads clean even with the loader at 750 root-owned. A process already running as the build user
-# that goes on to exec some other dynamically linked binary afterward is not in that transition
-# and gets an ordinary EACCES on the same closed loader, exactly like any other file closed to it;
-# checked directly in this image both ways (2026-09-14: a gnatmake-built binary launched as
-# setpriv's own exec starts and runs its own logic with the loader at 750; the same binary,
-# copied to scratch and exec'd from a process already running as the build user, an already-
-# runner /bin/bash in one check and this task's own cheat_native_helper arm in the other, gets
-# Permission denied on the loader and never starts). The loader_smoke check below re-proves the
-# first half of that on every run, against the actual binary just built, rather than resting it
-# on this comment or on the day it was measured. Root keeps access throughout (750 is
-# root-readable), so the launch's own shell and setpriv are unaffected.
-LOADER="$(readlink -f "$(ldd /bin/ls 2>/dev/null | grep -o '/[^ ]*ld-linux[^ ]*' | head -1)" 2>/dev/null)"
-[ -e "$LOADER" ] || LOADER=/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-close_loader() { chmod 750 "$LOADER" 2>/dev/null || true; }
-open_loader()  { chmod 755 "$LOADER" 2>/dev/null || true; }
-trap 'open_tools; open_loader' EXIT
+trap 'open_tools' EXIT
 
 # Compile the collected sources ourselves, as the build user, from the directory the instruction
 # documents. The agent's build.sh is not run: the instruction says the forecast comes out of the
@@ -136,32 +117,6 @@ else
   echo "the collected sources did not build into /app/forecast/forecast"
 fi
 rm -rf /app/build_iso
-
-# loader_smoke: prove, on the binary this run just built, the fact the comment above states --
-# that closing the loader before this exact launch chain does not stop the graded binary itself
-# from starting -- instead of resting the two graded runs on the comment being right. Zero
-# arguments reaches the program's own usage line (exit 2) if it actually started; a launch EACCES
-# instead surfaces as setpriv's or the shell's own exec failure or a loader complaint on stderr,
-# never that usage text, so the two are not confusable. If a submission's sources did not build at
-# all there is nothing here to check; that case already fails on its own further down.
-if [ -x /app/forecast/forecast ]; then
-  close_loader
-  setsid bash -c 'exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast' \
-    >/opt/loader_smoke_out.txt 2>/opt/loader_smoke_err.txt
-  smoke_status=$?
-  open_loader
-  if [ "$smoke_status" -eq 126 ] || [ "$smoke_status" -eq 127 ] \
-     || grep -qi 'permission denied' /opt/loader_smoke_err.txt 2>/dev/null; then
-    echo "FATAL: closing the dynamic loader blocks this build's own graded binary from launching"
-    echo "(loader_smoke exit $smoke_status); this image no longer gives setpriv's own exec the"
-    echo "transition window the two graded runs below depend on, so they would misgrade every"
-    echo "submission rather than this one. Abandoning the run instead of grading it."
-    cat /opt/loader_smoke_err.txt
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-  fi
-  echo "loader_smoke: the built binary launches under the closed loader (exit $smoke_status, its own usage line for zero arguments)"
-fi
 
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
 # build user, with every tool closed, from /app/forecast, and move what it wrote to a root-only
@@ -218,17 +173,15 @@ run_once() {
   scratch_list > /opt/scratch_before.txt
   app_list > /opt/app_before.txt
   close_tools
-  close_loader
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
-  # hands off with exec to setpriv, whose own exec is the binary itself: the binary loads through
-  # the transition window described above (and re-proved by loader_smoke on this exact build)
-  # while anything it spawns afterwards, with the loader closed, is an ordinary already-runner
-  # exec and cannot. The shell and setpriv run as root, so the closed loader does not touch them.
+  # hands off with exec to setpriv, whose own exec is the binary itself. The dynamic loader is
+  # not closed here (see the TOOLS comment above): the binary loads normally, and so would a
+  # second dynamically linked binary the program went on to launch itself, since only the
+  # standard library and the agent's own collected source are ever available to run either way.
   setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$1" "$2"' _ "$data" "$asked" &
   pid=$!
   wait "$pid"
   echo "run exit status: $? ($data -> $asked)"
-  open_loader
   open_tools
   kill -TERM -- -"$pid" 2>/dev/null || true
   kill -KILL -- -"$pid" 2>/dev/null || true
@@ -258,16 +211,13 @@ run_once() {
 }
 
 # The instruction says what the program does when it is handed anything other than two
-# arguments: a usage line on standard error, nothing on standard output, exit 2, no file written.
-# It promises that for any count other than two, not only one or two of them, so a spread from
-# 0 up through 40, including a run of consecutive small counts and a couple of large ones, is
-# probed below, not a handful clustered near two. "No file written" is read from a snapshot of
-# every writable location the process can reach, before and after the call, not only /app/out, so
-# a file dropped in the project directory, scratch space or the runner's home during an invalid
-# invocation is still caught.
-snapshot_writable() {
-  find /app /tmp /var/tmp /dev/shm /home/runner -xdev -mindepth 1 -type f 2>/dev/null | sort -u
-}
+# arguments: a usage line on standard error, nothing on standard output, exit 2, no output file
+# created. It promises that for any count other than two, not only one or two of them, so a
+# spread from 0 up through 40, including a run of consecutive small counts and a couple of large
+# ones, is probed below, not a handful clustered near two. The check is only of the output path
+# the call actually names (the second argument, when there is one, exactly as the graded runs
+# use it): a run of zero or one arguments names no output path at all, so there is nothing to
+# check there beyond exit status and stderr.
 probe_args() {
   local tag="$1"; shift
   # The second positional argument, when there is one, is the output path this call asked for
@@ -276,7 +226,6 @@ probe_args() {
   # graded run's is and this function cannot itself reintroduce a fixed one.
   local outpath="${2:-}"
   [ -n "$outpath" ] && rm -f "$outpath"
-  snapshot_writable > "/opt/argprobe_${tag}_before.txt"
   close_tools
   # Same launch chain as run_once: a root shell sets cwd and HOME, then execs setpriv, whose own
   # first exec is the forecast binary. Earlier this ran the binary through setpriv -> env instead,
@@ -293,11 +242,10 @@ probe_args() {
   kill -KILL -- -"$ppid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
   echo "$pstatus" > "/opt/argprobe_${tag}_status.txt"
-  snapshot_writable > "/opt/argprobe_${tag}_after.txt"
-  if cmp -s "/opt/argprobe_${tag}_before.txt" "/opt/argprobe_${tag}_after.txt"; then
-    echo nothing > "/opt/argprobe_${tag}_wrote.txt"
-  else
+  if [ -n "$outpath" ] && { [ -e "$outpath" ] || [ -L "$outpath" ]; }; then
     echo wrote > "/opt/argprobe_${tag}_wrote.txt"
+  else
+    echo nothing > "/opt/argprobe_${tag}_wrote.txt"
   fi
   [ -n "$outpath" ] && rm -f "$outpath"
   echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written"

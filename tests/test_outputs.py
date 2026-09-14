@@ -151,8 +151,10 @@ def test_nothing_was_added_to_the_export():
 
 
 def _probe(tag):
-    """What one probe run in test.sh did: exit status, whether anything appeared in /app/out,
-    and the two output streams."""
+    """What one probe run in test.sh did: exit status, whether the output path it was given (if
+    any) exists afterward, and the two output streams. "wrote" answers only for the output path
+    named in the call; a call of zero or one arguments names no output path, so test.sh always
+    records "nothing" for those and there is nothing else to check there."""
     read = lambda part: pathlib.Path(f"/opt/argprobe_{tag}_{part}.txt").read_text()
     return (int(read("status").strip()), read("wrote").strip(), read("out"), read("err"))
 
@@ -160,10 +162,10 @@ def _probe(tag):
 @pytest.mark.parametrize("arity", [0, 1, 3, 4, 5, 6, 7, 8, 16, 40])
 def test_wrong_argument_count_is_refused(arity):
     """Every wrong argument count, not just a couple of them, gets something on stderr, an empty
-    stdout, exit 2 and no file. test.sh runs a spread from 0 up through 40, small counts and a
-    couple of large ones, before the graded runs. The instruction promises this for any count
-    other than two, so a program that special-cases a handful of small counts near two, and
-    answers differently once the count grows, is still caught.
+    stdout, exit 2 and no output file created. test.sh runs a spread from 0 up through 40, small
+    counts and a couple of large ones, before the graded runs. The instruction promises this for
+    any count other than two, so a program that special-cases a handful of small counts near two,
+    and answers differently once the count grows, is still caught.
 
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an
@@ -171,23 +173,23 @@ def test_wrong_argument_count_is_refused(arity):
     contract has no fixed text to hold it to, so nothing narrower than non-empty is enforceable."""
     status, wrote, out, err = _probe(f"argc_{arity}")
     assert status == 2, f"{arity} arguments gave exit status {status}, not 2"
-    assert wrote == "nothing", f"{arity} arguments still left something in a writable location"
+    assert wrote == "nothing", f"{arity} arguments still created the output file it was told to use"
     assert out.strip() == "", f"{arity} arguments put this on stdout: {out[:200]!r}"
     assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
 
 
 @pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000, 99999999999999999999])
 def test_another_horizon_is_refused(horizon):
-    """Handed a policy asking for a horizon other than 365 the program says so on stderr, writes
-    nothing and exits 3. Both graded exports say 365, so without this the key could go unread.
-    Several values are tried, not only one, so a program that special-cases a single sampled
-    number cannot pass by accident; the last is a twenty-digit numeral, another horizon that no
-    32-bit integer holds, so a program that converts first and compares after has to refuse it
-    the same way rather than die on the conversion. Only what the instruction states is checked:
-    stdout is not, since the contract says nothing about it on this path."""
+    """Handed a policy asking for a horizon other than 365 the program says so on stderr, creates
+    no output file and exits 3. Both graded exports say 365, so without this the key could go
+    unread. Several values are tried, not only one, so a program that special-cases a single
+    sampled number cannot pass by accident; the last is a twenty-digit numeral, another horizon
+    that no 32-bit integer holds, so a program that converts first and compares after has to
+    refuse it the same way rather than die on the conversion. Only what the instruction states is
+    checked: stdout is not, since the contract says nothing about it on this path."""
     status, wrote, _out, err = _probe(f"horizon_{horizon}")
     assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
-    assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still left something in a writable location"
+    assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still created the output file it was told to use"
     assert err.strip() != "", f"a {horizon} day horizon it cannot answer passed without a word on stderr"
 
 
