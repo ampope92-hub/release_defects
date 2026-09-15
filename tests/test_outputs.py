@@ -26,10 +26,10 @@ SHIPPED_DATA = pathlib.Path("/app/data")
 HIDDEN_DATA = pathlib.Path("/opt/hidden/data")
 
 SHIPPED_SHA = {
-    "releases.csv": "1b498bfb45113b5a8fe684b7d9401b2f6bc6c8f7be536666c83cbe9a6c5c63df",
-    "reports.csv": "aa2c81cd60e8e7999370a57d06a90e00c841ed524e4b62232d7d67f080b6558c",
-    "policy.json": "912d7eed089226981c961f6100f103ddffb773b8abc68ea7888da429a3402ecb",
-    "README.md": "a0c2813699b74a9c381c56fbbb2be2bb81e0e01129533439ba1cd2b19d466843",
+    "releases.csv": "b905ef05b956bfc56a553c72d33b2414d403d0f0a4f465c014531f35655af986",
+    "reports.csv": "dbc7afa5796c78fec19989afcb830600c89f1b783a5ad6c20225e86c0cb2f08a",
+    "policy.json": "5f644618bcbcf6ac9bfc544bc99aab89f09d80141403eaacec37885b177c09aa",
+    "README.md": "73d8a22b0ee7f6502811589477b8d5f0b5a444a7689891b2341dcbfbe52e751f",
 }
 
 RUNS = [
@@ -176,11 +176,16 @@ def test_wrong_argument_count_is_refused(arity):
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an
     unrelated but non-empty message would still be gaming the letter of the contract, but the
-    contract has no fixed text to hold it to, so nothing narrower than non-empty is enforceable."""
+    contract has no fixed text to hold it to, so nothing narrower than non-empty is enforceable.
+
+    Standard output is the other way round: the contract says it stays empty, and test.sh captures
+    it straight from the file descriptor, so the capture is compared as the exact bytes it holds.
+    A lone newline is not empty; a program whose usage path also prints a blank line to stdout
+    fails here, where a stripped comparison used to let it through."""
     status, wrote, out, err, violation = _probe(f"argc_{arity}")
     assert status == 2, f"{arity} arguments gave exit status {status}, not 2"
     assert wrote == "nothing", f"{arity} arguments still created the output file it was told to use"
-    assert out.strip() == "", f"{arity} arguments put this on stdout: {out[:200]!r}"
+    assert out == "", f"{arity} arguments put this on stdout, which the contract says stays empty: {out[:200]!r}"
     assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
     assert violation == "", f"{arity} arguments {violation}"
 
@@ -258,6 +263,61 @@ def test_a_release_sits_on_its_column_edge(run_path, key_path, data_dir):
         f"{data_dir}: no forecast release carries a batch on its own column edge; the largest "
         f"move a lag<=N reading would make is {best} by {effects[best]:.1f} reports, which the "
         f"consistency check's one-report allowance can swallow"
+    )
+
+
+@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
+def test_a_release_sits_one_day_past_a_column_edge(run_path, key_path, data_dir):
+    """The export has to carry the case that separates the instruction's floor((A+1)/30) complete
+    columns from the ordinary off-by-one floor(A/30), or the column rule is stated and never
+    exercised: a release whose age has remainder 29 is the only kind on which the two disagree,
+    and on an ordinary such release the two columns estimate the same total to within a report,
+    so its mere presence proves nothing. This is a check on the fixture, not on the run: at least
+    one forecast release must be one day past a column edge AND carry reports placed so that the
+    figure read off the lower column misses the count it reached by more than the policy's own
+    tolerance_per_release, and differs from the right column's figure by far more than the one
+    report the consistency check allows, whatever precision the curve is printed to. It fails
+    loudly if a regeneration ever drops the case.
+
+    In the shipped export that release is 4.31, 59 days old, whose month-end close crashed for
+    everyone on day 58: a hundred and fifty-odd crash reports inside its sixty-day column and
+    none inside its thirty-day one, so the lower column reads about 216 against a count reached
+    of 360. In the other export it is 7.41, also 59 days old, where the slow-reporter release
+    pulls the pooled thirty-day crash share down to 0.69 and the lower column grosses an
+    ordinary release's crash reports up by a quarter."""
+    rel, _ = _rows(data_dir)
+    export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
+    real = _key(key_path)["reports_within_365_days"]
+    tol = _policy(data_dir)["tolerance_per_release"]
+    want = {src: _true_share(data_dir, src) for src in ("ticket", "crash")}
+
+    def figure(v, k):
+        total = 0.0
+        for src in ("ticket", "crash"):
+            n = _reports_by(data_dir, v, src, STEP * k)
+            share = want[src][str(STEP * k)] if want[src] else 0.0
+            if n and share > 0:
+                total += n / share
+        return total
+
+    cases = {}
+    for v in _policy(data_dir)["forecast_releases"]:
+        age = (export - datetime.date.fromisoformat(rel[v]["release_date"])).days
+        right, lower = min((age + 1) // STEP, len(AGES)), min(age // STEP, len(AGES))
+        if lower < 1 or lower == right:
+            continue
+        r, w = figure(v, right), figure(v, lower)
+        cases[f"{v} at {age} days"] = (abs(r - w), abs(w - real[v]) / real[v])
+    assert cases, (
+        f"{data_dir}: no forecast release is one day past a column edge, so floor((A+1)/30) and "
+        f"floor(A/30) pick the same column for every graded release"
+    )
+    best = max(cases, key=lambda c: cases[c][1])
+    moved, off = cases[best]
+    assert moved > 10.0 and off > tol, (
+        f"{data_dir}: the lower column is not separated from the right one on any forecast release; "
+        f"the widest case is {best}, where reading floor(A/30) moves the figure by {moved:.1f} reports "
+        f"and lands {off:.1%} from the count reached, inside the {tol:.0%} tolerance"
     )
 
 

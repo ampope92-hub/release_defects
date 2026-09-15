@@ -21,6 +21,10 @@ is never moved.
 The trial licence built into the installer ran out that morning for everyone who installed on
 release day, and the group walked into the same expiry defect together.
 
+4.31 carries a batch of crash reports that all share one `opened_date` too, 2025-08-31,
+fifty-eight days after it shipped. That was the first month-end close run wholly on it, and the
+close crashed for everyone who ran it; the reporter filed each one the same day.
+
 `status` is `open`, `duplicate` or `invalid`. A duplicate or invalid report is not a defect.
 Drop it everywhere: not in a column count, not in a curve, not in the count a release divides
 by its curve.
