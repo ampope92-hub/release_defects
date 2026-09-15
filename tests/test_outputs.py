@@ -27,9 +27,9 @@ HIDDEN_DATA = pathlib.Path("/opt/hidden/data")
 
 SHIPPED_SHA = {
     "releases.csv": "1b498bfb45113b5a8fe684b7d9401b2f6bc6c8f7be536666c83cbe9a6c5c63df",
-    "reports.csv": "09dd9079c2d47da8d99bc23d2506f77915b78f04e78dd3baa3cca9fcda10e2f7",
-    "policy.json": "7910b56b680dd8c47e3430fd27c6cc7278f4c72b558f66bba07372d3b13dd177",
-    "README.md": "1d95cf9b9e88d405282601db619712910e7656672dd8e212aff146e22ff1df61",
+    "reports.csv": "aa2c81cd60e8e7999370a57d06a90e00c841ed524e4b62232d7d67f080b6558c",
+    "policy.json": "912d7eed089226981c961f6100f103ddffb773b8abc68ea7888da429a3402ecb",
+    "README.md": "a0c2813699b74a9c381c56fbbb2be2bb81e0e01129533439ba1cd2b19d466843",
 }
 
 RUNS = [
@@ -152,8 +152,8 @@ def test_nothing_was_added_to_the_export():
 
 def _probe(tag):
     """What one probe run in test.sh did: exit status, whether the output path it was given (if
-    any) exists afterward, the two output streams, and any leftover-executable/new-app-file
-    violation test.sh's check_after found for this call specifically. "wrote" answers only for
+    any) exists afterward, the two output streams, and any leftover-file violation test.sh's
+    check_after found for this call specifically. "wrote" answers only for
     the output path named in the call; a call of zero or one arguments names no output path, so
     test.sh always records "nothing" for those and there is nothing else to check there. Every
     probe is bracketed by the same before/after check a graded run gets, not only the two graded
@@ -166,13 +166,12 @@ def _probe(tag):
     )
 
 
-@pytest.mark.parametrize("arity", [0, 1, 3, 4, 5, 6, 7, 8, 16, 40])
+@pytest.mark.parametrize("arity", [n for n in range(41) if n != 2])
 def test_wrong_argument_count_is_refused(arity):
-    """Every wrong argument count, not just a couple of them, gets something on stderr, an empty
-    stdout, exit 2 and no output file created. test.sh runs a spread from 0 up through 40, small
-    counts and a couple of large ones, before the graded runs; the instruction states that same
-    spread rather than claiming every count other than two is exercised, so what is checked here
-    is exactly what is promised.
+    """Every wrong argument count gets something on stderr, an empty stdout, exit 2 and no output
+    file created. The instruction bounds the promise to the counts from zero through forty, and
+    test.sh probes every one of them before the graded runs, so the promise and the grading are
+    the same set: there is no count inside it a program could answer differently and still pass.
 
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an
@@ -188,13 +187,14 @@ def test_wrong_argument_count_is_refused(arity):
 
 @pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000, 99999999999999999999])
 def test_another_horizon_is_refused(horizon):
-    """Handed a policy asking for a horizon other than 365 the program says so on stderr, creates
-    no output file and exits 3. Both graded exports say 365, so without this the key could go
-    unread. Several values are tried, not only one, so a program that special-cases a single
-    sampled number cannot pass by accident; the last is a twenty-digit numeral, another horizon
-    that no 32-bit integer holds, so a program that converts first and compares after has to
-    refuse it the same way rather than die on the conversion. Only what the instruction states is
-    checked: stdout is not, since the contract says nothing about it on this path."""
+    """Handed a policy asking for one of the seven horizons the instruction names the program says
+    so on stderr, creates no output file and exits 3. Both graded exports say 365, so without this
+    the key could go unread. These seven are exactly the seven the contract states, so nothing is
+    promised here that is not graded: staging a whole export per horizon costs a copy of the
+    report log, which rules out the exhaustive range the argument counts above get. The last is a
+    twenty-digit numeral, a horizon no 32-bit integer holds, so a program that converts first and
+    compares after has to refuse it rather than die on the conversion. Only what the instruction
+    states is checked: stdout is not, since the contract says nothing about it on this path."""
     status, wrote, _out, err, violation = _probe(f"horizon_{horizon}")
     assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
     assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still created the output file it was told to use"
@@ -211,6 +211,53 @@ def _reports_by(data_dir, version, source, days):
         1 for r in reps
         if r["version"] == version and r["source"] == source and r["status"] == "open"
         and (datetime.date.fromisoformat(r["opened_date"]) - rd).days < days
+    )
+
+
+def _reports_on(data_dir, version, source, day):
+    """Open reports filed against one release from one source whose opened_date falls exactly
+    `day` days after it shipped: the reports that separate a lag under `day` from a lag of `day`
+    or less."""
+    rel, reps = _rows(data_dir)
+    rd = datetime.date.fromisoformat(rel[version]["release_date"])
+    return sum(
+        1 for r in reps
+        if r["version"] == version and r["source"] == source and r["status"] == "open"
+        and (datetime.date.fromisoformat(r["opened_date"]) - rd).days == day
+    )
+
+
+@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
+def test_a_release_sits_on_its_column_edge(run_path, key_path, data_dir):
+    """The export itself has to carry the case that separates the instruction's "opened lag under
+    N days" from "N days or less", or the check below cannot tell the two readings apart. This is
+    a check on the fixture, not on the run: at least one forecast release must carry a batch of
+    open reports opened exactly on its last complete column edge, big enough that dividing them by
+    the curve at that edge moves the release's figure by far more than the one report the
+    consistency check allows. It fails loudly if a regeneration ever drops the case.
+
+    In the shipped export that release is 4.28: fourteen tickets all opened sixty days after it
+    shipped, against a ticket share of about 0.40 at the sixty-day column, which is thirty-four
+    reports on a forecast of a hundred and ninety-four."""
+    rel, _ = _rows(data_dir)
+    export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
+    effects = {}
+    for v in _policy(data_dir)["forecast_releases"]:
+        age = (export - datetime.date.fromisoformat(rel[v]["release_date"])).days
+        edge = STEP * min((age + 1) // STEP, len(AGES))
+        moved = 0.0
+        for src in ("ticket", "crash"):
+            want = _true_share(data_dir, src)
+            share = want[str(edge)] if want else 0.0
+            n = _reports_on(data_dir, v, src, edge)
+            if n and share > 0:
+                moved += n / share
+        effects[f"{v} at {edge} days"] = moved
+    best = max(effects, key=effects.get)
+    assert effects[best] > 10.0, (
+        f"{data_dir}: no forecast release carries a batch on its own column edge; the largest "
+        f"move a lag<=N reading would make is {best} by {effects[best]:.1f} reports, which the "
+        f"consistency check's one-report allowance can swallow"
     )
 
 

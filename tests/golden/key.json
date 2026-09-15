@@ -9,7 +9,7 @@
     "4.25": 242,
     "4.26": 466,
     "4.27": 80,
-    "4.28": 195
+    "4.28": 209
   },
   "tolerance_per_release": 0.2,
   "tolerance_total": 0.1,
@@ -155,7 +155,7 @@
       "release_date": "2025-05-12"
     },
     "4.28": {
-      "reports_within_365_days": 195,
+      "reports_within_365_days": 209,
       "true_rate_per_10k": 5.382,
       "release_date": "2025-06-23"
     },

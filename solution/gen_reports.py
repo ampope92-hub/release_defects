@@ -260,6 +260,46 @@ def main():
             if opened <= export:
                 reports.append((pilot_version, opened, "crash", "open", opened))
 
+    to_forecast = [v for v, rd, _, _ in releases if 60 <= (export - rd).days < 210]
+    if a.hidden:
+        # The age-59 release is younger than the 60-day floor above but is still asked for, so a
+        # forecast release always sits one day past a column edge; the age-400 release is kept on
+        # the list though it is long past the horizon, so the twelve-column cap has something to
+        # bind on (see the special releases above).
+        to_forecast.append(special_versions[59])
+        to_forecast.append(special_versions[400])
+
+    # One forecast release carries a batch of tickets that were all opened on the same day, the
+    # day its last whole thirty-day column closes: every copy installed on release day ran its
+    # built-in trial licence out that morning, and the group walked into the same expiry defect
+    # together. The day is a column edge, so the release's own count over that column holds these
+    # reports only if the boundary is read the wrong way round. The batch is big enough, against
+    # the share at that edge, that counting it moves the release's figure by tens of reports, far
+    # past the one report the printed-curve check allows. The release chosen is the youngest one
+    # on the forecast list whose column edge fell at least five days before the export date, so
+    # the whole batch is inside the export window.
+    burst_mean = 26.0 if a.hidden else 13.0
+    rng_burst = random.Random(a.seed * 1_000_003 + 19)
+    burst_version = None
+    for version, rd, _installs, _has in sorted(releases, key=lambda r: r[1], reverse=True):
+        if version not in to_forecast:
+            continue
+        age = (export - rd).days
+        edge = 30 * min((age + 1) // 30, 12)
+        if age - edge >= 5:
+            burst_version, burst_date, burst_edge = version, rd, edge
+            break
+    if burst_version is not None:
+        n_burst = poisson(rng_burst, burst_mean)
+        opened = burst_date + dt.timedelta(days=burst_edge)
+        for _ in range(n_burst):
+            gap = int(rng_burst.lognormvariate(math.log(triage_med), triage_sig))
+            reported = min(opened + dt.timedelta(days=gap), export)
+            reports.append((burst_version, reported, "ticket", "open", opened))
+        truth[burst_version]["reports_within_365_days"] += n_burst
+        print(f"  boundary batch: {n_burst} tickets on {burst_version}, all opened "
+              f"{burst_edge} days after it shipped ({opened.isoformat()})")
+
     out = pathlib.Path(a.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "releases.csv", "w", newline="") as fh:
@@ -274,14 +314,6 @@ def main():
         for k, (version, when, source, status, opened) in enumerate(reports, 1):
             w.writerow([f"R{k:06d}", version, when.isoformat(), source, status, opened.isoformat()])
 
-    to_forecast = [v for v, rd, _, _ in releases if 60 <= (export - rd).days < 210]
-    if a.hidden:
-        # The age-59 release is younger than the 60-day floor above but is still asked for, so a
-        # forecast release always sits one day past a column edge; the age-400 release is kept on
-        # the list though it is long past the horizon, so the twelve-column cap has something to
-        # bind on (see the special releases above).
-        to_forecast.append(special_versions[59])
-        to_forecast.append(special_versions[400])
     received = {}
     for version, when, source, status, opened in reports:
         received[version] = received.get(version, 0) + 1

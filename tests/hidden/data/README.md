@@ -20,6 +20,10 @@ Every defect report received up to the export date, one row each: `report_id`, `
 crash reporter), `status` and `opened_date`. A report is filed against exactly one release and
 is never moved.
 
+7.35 carries a batch of tickets that all share one `opened_date`, ninety days after it shipped.
+The trial licence built into the installer ran out that morning for everyone who installed on
+release day, and the group walked into the same expiry defect together.
+
 `status` is `open`, `duplicate` or `invalid`. A duplicate or invalid report is not a defect.
 Drop it everywhere: not in a column count, not in a curve, not in the count a release divides
 by its curve.

@@ -75,8 +75,10 @@ TOOLS="$( { find /usr/local/bin /usr/local/sbin /usr/bin /bin /usr/sbin /sbin -x
 # dynamically linked binary. A helper compiled from the agent's own collected source is not a
 # route around anything: only src/*.adb|ads is ever compiled, so the same standard-library-only
 # code is all that could run either way.
-close_tools() { for f in $TOOLS; do chmod 750 "$f" 2>/dev/null || true; done; }
-open_tools()  { for f in $TOOLS; do chmod 755 "$f" 2>/dev/null || true; done; }
+# One chmod process rather than one per file: every invocation below is bracketed by this pair,
+# and the argument-count probes alone now run it forty times.
+close_tools() { printf '%s\n' "$TOOLS" | xargs -d '\n' -r chmod 750 2>/dev/null || true; }
+open_tools()  { printf '%s\n' "$TOOLS" | xargs -d '\n' -r chmod 755 2>/dev/null || true; }
 trap 'open_tools' EXIT
 
 # Compile the collected sources ourselves, as the build user, from the directory the instruction
@@ -94,12 +96,21 @@ trap 'open_tools' EXIT
 rm -rf /app/forecast /app/build_iso
 cp -a /opt/forecast_pristine /app/forecast
 # Only Ada source ever survives under src/: an ordinary GNAT project built with the documented
-# `gnatmake -I src` command needs nothing else there, and the instruction now says so. Anything
-# else the agent left there is deleted now, before the run even starts, rather than merely
-# losing its read and execute bits later -- so there is nothing left on disk for the later
-# point-in-time checks to have to catch. /opt/forecast_pristine, the copy the build step below
-# still reads from, keeps the original files; only the collected working copy is stripped.
-find /app/forecast/src -mindepth 1 -maxdepth 1 -type f ! -name '*.adb' ! -name '*.ads' -delete 2>/dev/null || true
+# `gnatmake -I src` command needs nothing else there, and the instruction says so. Every entry
+# that is not a top-level *.adb or *.ads regular file is deleted now, before the run even starts,
+# rather than merely losing its read and execute bits later. "Every entry" is meant literally and
+# is not a question of file MODE: a directory and everything under it goes too, so a nested tree
+# whose DIRECTORY NAMES carry a parser table or any other payload is gone rather than merely
+# unreadable, and so does a symlink, a fifo or a device node, none of which the documented build
+# reads. Nothing an ordinary GNAT project needs is lost: `gnatmake -I src` compiles from src/
+# itself, so a sub-directory was never on its build path in the first place.
+# /app/out is emptied on the same terms. It is a collected path too, so whatever the agent leaves
+# there arrives with the project; nothing is meant to be in it before the run, and the instruction
+# says so. /opt/forecast_pristine, the copy the build step below still reads from, keeps the
+# original files; only the collected working copy is stripped.
+find /app/forecast/src -mindepth 1 -maxdepth 1 \
+     ! \( -type f \( -name '*.adb' -o -name '*.ads' \) \) -exec rm -rf -- {} + 2>/dev/null || true
+find /app/out -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + 2>/dev/null || true
 mkdir -p /app/build_iso/src
 find /app/forecast/src -maxdepth 1 -type f \( -name '*.adb' -o -name '*.ads' \) \
      -exec cp -- {} /app/build_iso/src/ \;
@@ -138,23 +149,22 @@ rm -rf /app/build_iso
 # snapshot's "before" picture, since that picture was only ever taken right before the two graded
 # runs; every invocation now takes and checks its own before/after pair, so nothing has anywhere
 # to hide between one call and the next.
-scratch_list() {
-  find /tmp /var/tmp /dev/shm /home/runner /app -xdev -type f -perm /111 2>/dev/null | sort -u
-}
-# Under /app the sweep is not limited to executables: the instruction says the only new file an
-# invocation may leave there is the JSON it was asked for (or nothing at all, for a call that
-# named no output path), so the whole tree is listed on either side of every call, and every new
-# FILE of any kind (a regular file, a symlink, a fifo, a device) other than the one it was allowed
-# discards its output. A plain directory is not a file and is not listed, matching the
-# instruction's own wording; a probe's own staging directory is created before its bracket opens
-# and removed only after it closes, so it never looks new to this. Scratch space and the runner's
-# home are the program's own and stay held only to the executable rule above.
-app_list() {
-  find /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
+# The sweep turns on nothing but presence. A file's MODE is not the control here: the dynamic
+# loader is deliberately left executable (see the TOOLS comment above), and it will map and run a
+# helper the kernel would refuse to execve directly, so an execute bit says nothing about whether
+# a leftover file could have done work. Every non-directory entry anywhere the run could write is
+# listed instead, scratch space, the runner's home and the whole of /app alike (/app itself
+# included, not only its known subdirectories, so nothing dropped as a sibling of forecast/, out/
+# or data/ escapes by sitting outside all three), and anything new other than the one output file
+# the call was allowed throws that invocation's own output away.
+# A plain directory is not a file and is not listed, matching the instruction's own wording; a
+# probe's own staging directory is created before its bracket opens and removed only after it
+# closes, so it never looks new to this.
+all_list() {
+  find /tmp /var/tmp /dev/shm /home/runner /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
 }
 snapshot_before() {
-  scratch_list > /opt/scratch_before.txt
-  app_list > /opt/app_before.txt
+  all_list > /opt/all_before.txt
 }
 # check_after <keep-path>: call once tools are reopened. <keep-path> is the one path this
 # invocation was allowed to write (empty when it named none). Prints a one-line description of
@@ -162,21 +172,32 @@ snapshot_before() {
 # invocation leaves behind can ever look like it was "already there" to the NEXT invocation's own
 # before picture.
 check_after() {
-  local keep="$1" left added desc=""
-  scratch_list > /opt/scratch_after.txt
-  app_list > /opt/app_after.txt
-  if ! left="$(comm -13 /opt/scratch_before.txt /opt/scratch_after.txt)"; then left=""; fi
-  if [ -n "$left" ]; then
-    desc="left something executable in scratch space ($left)"
-    printf '%s\n' "$left" | while IFS= read -r f; do [ -n "$f" ] && rm -f -- "$f"; done
-  fi
-  if ! added="$(comm -13 /opt/app_before.txt /opt/app_after.txt | grep -v -x -F -- "$keep")"; then added=""; fi
+  local keep="$1" added desc=""
+  all_list > /opt/all_after.txt
+  if ! added="$(comm -13 /opt/all_before.txt /opt/all_after.txt | grep -v -x -F -- "$keep")"; then added=""; fi
   if [ -n "$added" ]; then
-    [ -n "$desc" ] && desc="$desc; "
-    desc="${desc}left a new path under /app other than the file it was asked for ($added)"
+    desc="left a new file behind other than the one it was asked for ($added)"
     printf '%s\n' "$added" | while IFS= read -r f; do [ -n "$f" ] && rm -f -- "$f"; done
   fi
   printf '%s' "$desc"
+}
+
+# lock_project [data-dir]: the state every invocation runs under, graded run and probe alike.
+# Everything under /app/forecast except the binary this verifier built loses its read and execute
+# bits -- the project's own sub-directories included, so a directory NAME cannot be read as data
+# any more than a file's contents can -- and /app/forecast itself keeps only the execute bit the
+# launch below needs to cd into it and start the binary. /app/out is a collected path the agent
+# can populate too, so it is swept on the same terms; the export directory, when one is named,
+# loses execute bits but keeps its read bits, since that is the input, and a file planted there
+# instead is caught by the check that /app/data holds the shipped files and nothing else.
+lock_project() {
+  local data="${1:-}"
+  find /app/forecast /app/out $data -type f -perm /111 \
+       ! -samefile /app/forecast/forecast -exec chmod a-x {} + 2>/dev/null || true
+  find /app/forecast /app/out -type f \
+       ! -samefile /app/forecast/forecast -exec chmod a-r {} + 2>/dev/null || true
+  find /app/forecast -mindepth 1 -depth -type d -exec chmod a-rx {} + 2>/dev/null || true
+  chmod a-r /app/forecast 2>/dev/null || true
 }
 
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
@@ -192,19 +213,10 @@ run_once() {
   local data="$1" asked="$2" out="$3" pid violation
   rm -f "$asked"
   # Closing the system paths stops the binary shelling out to a python or an awk, but the project
-  # directory is the agent's own and is collected as an artifact, so an executable helper shipped
-  # inside it would still run. Everything under /app/forecast except the binary this verifier just
-  # built loses its execute bits for the graded runs.
-  # /app/out and the data directory are collected artifact paths the agent can populate too, so
-  # they are swept on the same terms; only the binary this verifier built keeps its execute bit.
-  find /app/forecast /app/out "$data" -type f -perm /111 \
-       ! -samefile /app/forecast/forecast -exec chmod a-x {} + 2>/dev/null || true
-  # An execute bit is not what a shared object needs. The loader only has to read one, so inside
-  # the project and the output directory nothing but the built binary stays readable either. The
-  # export directory keeps its read bits, since that is the input; a file planted there instead is
-  # caught by the check that /app/data holds the shipped files and nothing else.
-  find /app/forecast /app/out -type f \
-       ! -samefile /app/forecast/forecast -exec chmod a-r {} + 2>/dev/null || true
+  # directory is the agent's own and is collected as an artifact, so a helper shipped inside it
+  # would still be there to read. lock_project is what closes it, and the probes below run under
+  # exactly the same call.
+  lock_project "$data"
   snapshot_before
   close_tools
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
@@ -237,9 +249,11 @@ run_once() {
 
 # The instruction says what the program does when it is handed anything other than two
 # arguments: a usage line on standard error, nothing on standard output, exit 2, no output file
-# created. It promises that for a spread of counts, from zero through forty, so a spread from 0
-# up through 40, including a run of consecutive small counts and a couple of large ones, is
-# probed below, not a handful clustered near two. The check is only of the output path the call
+# created. It promises that for every argument count from zero through forty, and every one of
+# them is probed below -- all forty of them, not a sample. Sampling was the earlier design and it
+# left the promise wider than the grading: a program could refuse the counts the list happened to
+# hold and answer any other one normally. The promise is now a bounded set and the set is
+# exhausted, so there is no count inside it left ungraded. The check is only of the output path the call
 # actually names (the second argument, when there is one, exactly as the graded runs use it): a
 # run of zero or one arguments names no output path at all, so there is nothing to check there
 # beyond exit status and stderr -- and, as of this round, the same leftover-executable and
@@ -250,8 +264,14 @@ probe_args() {
   # (a freshly randomized name from the caller, same generator the graded runs use); it is only
   # ever cleaned up here, never chosen here, so a probe's basename is decided the same way a
   # graded run's is and this function cannot itself reintroduce a fixed one.
-  local outpath="${2:-}" violation
+  local outpath="${2:-}" violation datadir="${1:-}"
   [ -n "$outpath" ] && rm -f "$outpath"
+  # The project-tree lockdown is not a privilege of the graded runs. A probe is an invocation of
+  # the same binary and runs under the same closed project: it used to be bracketed by the
+  # before/after sweep but to reach an open /app/forecast, which made the first probe a window in
+  # which the build script and everything else collected with it could still be read and its
+  # contents staged somewhere for a later run to pick up.
+  if [ -n "$datadir" ] && [ -d "$datadir" ]; then lock_project "$datadir"; else lock_project; fi
   snapshot_before
   close_tools
   # Same launch chain as run_once: a root shell sets cwd and HOME, then execs setpriv, whose own
@@ -281,7 +301,8 @@ probe_args() {
 }
 
 echo "=== what it does when the argument count is wrong ==="
-for n in 0 1 3 4 5 6 7 8 16 40; do
+for n in $(seq 0 40); do
+  [ "$n" -eq 2 ] && continue
   case "$n" in
     0) probe_args "argc_0" ;;
     1) probe_args "argc_1" /app/data ;;
@@ -296,9 +317,12 @@ for n in 0 1 3 4 5 6 7 8 16 40; do
 done
 
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
-# so without cases of its own nothing would stop a program that never reads the key. Several other
-# values are tried, close to 365, far from it and one too long for any integer type, so a program
-# that special-cases the one sampled number cannot pass by accident.
+# so without cases of its own nothing would stop a program that never reads the key. The seven
+# values below are the seven the instruction names, one for one: close to 365, far from it and one
+# too long for any integer type. Staging a whole export for a horizon costs a copy of the report
+# log, so this list cannot be an exhaustive range the way the argument counts above are; rather
+# than promise more than is graded, the contract states these seven and nothing wider, and every
+# one of them is exercised here.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
