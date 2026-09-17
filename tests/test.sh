@@ -69,9 +69,9 @@ TOOLS="$( { find /usr/local/bin /usr/local/sbin /usr/bin /bin /usr/sbin /sbin -x
 # anything, since whatever it executes is checked on its own. Only regular files are listed: the
 # merged /bin is itself a symlink to /usr/bin, and closing that directory would shut the whole
 # tree, launcher included. The dynamic loader is deliberately excluded from this closure (see
-# below): the panel has three times rejected making an ordinary dynamically linked binary
-# unlaunchable as the price of this closure, so the loader itself is left alone and the value
-# this closure gives up is only the one attack that needed a *second*, separately-launched
+# below): closing it makes an ordinary dynamically linked binary unlaunchable during the
+# credential transition setpriv makes, so the loader itself is left alone and the value this
+# closure gives up is only the one attack that needed a *second*, separately-launched
 # dynamically linked binary. A helper compiled from the agent's own collected source is not a
 # route around anything: only src/*.adb|ads is ever compiled, so the same standard-library-only
 # code is all that could run either way.
@@ -248,16 +248,13 @@ run_once() {
 }
 
 # The instruction says what the program does when it is handed anything other than two
-# arguments: a usage line on standard error, nothing on standard output, exit 2, no output file
-# created. It promises that for every argument count from zero through forty, and every one of
-# them is probed below -- all forty of them, not a sample. Sampling was the earlier design and it
-# left the promise wider than the grading: a program could refuse the counts the list happened to
-# hold and answer any other one normally. The promise is now a bounded set and the set is
-# exhausted, so there is no count inside it left ungraded. The check is only of the output path the call
-# actually names (the second argument, when there is one, exactly as the graded runs use it): a
-# run of zero or one arguments names no output path at all, so there is nothing to check there
-# beyond exit status and stderr -- and, as of this round, the same leftover-executable and
-# new-app-file bracket every graded run gets (see check_after above).
+# arguments: a line on standard error, nothing on standard output, exit 2, no output file
+# created. Every count from zero through forty is probed below, forty cases rather than a
+# handful, so a program that refuses a few counts and answers another normally is caught. The
+# check is only of the output path the call actually names (the second argument, when there is
+# one, exactly as the graded runs use it): a run of zero or one arguments names no output path
+# at all, so there is nothing to check there beyond exit status and stderr -- and the same
+# leftover-file bracket every graded run gets (see check_after above).
 probe_args() {
   local tag="$1"; shift
   # The second positional argument, when there is one, is the output path this call asked for
@@ -318,11 +315,9 @@ done
 
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
 # so without cases of its own nothing would stop a program that never reads the key. The seven
-# values below are the seven the instruction names, one for one: close to 365, far from it and one
-# too long for any integer type. Staging a whole export for a horizon costs a copy of the report
-# log, so this list cannot be an exhaustive range the way the argument counts above are; rather
-# than promise more than is graded, the contract states these seven and nothing wider, and every
-# one of them is exercised here.
+# values below sample the promise: close to 365, far from it and one too long for any integer
+# type. Staging a whole export for a horizon costs a copy of the report log, so this list is a
+# sample rather than the exhaustive range the argument counts above get.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for

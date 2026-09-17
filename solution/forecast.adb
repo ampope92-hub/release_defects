@@ -149,9 +149,8 @@ procedure Forecast is
    --  Complete thirty-day columns available to divide a forecast by: floor((Age+1)/30), the
    --  same rule at every age, capped at Columns - 1 because the curve only publishes points up
    --  to 360 days (age 359 already reaches that cap). This never special-cases Age >= Horizon:
-   --  a release exactly 365 days old still gets its last complete column at day 360, not the
-   --  full day-365 total, because the contract's column formula and the curve's cohort cutoff
-   --  are two different rules and must not be folded into one field.
+   --  whether a release is old enough to feed the curve and which column a forecast reads off
+   --  it are two different facts, kept in two different fields.
    function Complete_Columns (Age : Integer) return Natural is
       N : Integer := (Age + 1) / 30;
    begin
