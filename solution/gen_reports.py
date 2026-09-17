@@ -18,9 +18,9 @@ Two more things a reader has to get right, both stated in the README as facts ab
                have no queue, so their two dates match.
 
 Each product also carries, on purpose, a release on every edge a reader can get wrong: one
-exactly 365 days old, one past the horizon but still on the forecast list, one 59 days old,
-and a pre-reporter release with crash rows of its own. Every one of them is drawn from its own
-random stream, so tuning one never moves another release's reports.
+exactly 365 days old, one past the horizon but still on the forecast list, one exactly 60 days
+old, and a pre-reporter release with crash rows of its own. Every one of them is drawn from its
+own random stream, so tuning one never moves another release's reports.
 
     gen_reports.py <out-dir> <key-dir> [--seed N] [--hidden]
 
@@ -49,7 +49,7 @@ def poisson(rng, mean):
 def gen_one_release(rng, rng_status, rng_triage, i, d, installs, has_reporter, export, *,
                      base_rate, trend, rate_sd, reporter_lift, crash_share,
                      crash_med, crash_sig, ticket_med, ticket_sig,
-                     ambient_bad_p, triage_med, triage_sig):
+                     ambient_bad_p, triage_med, triage_sig, crash_sync=0):
     """One release's underlying rate, its reports up to the export date, and its true day-365
     total: the same draws in the same order whether the release comes from the normal
     chronological schedule or from a date chosen explicitly to land on a boundary the schedule
@@ -67,6 +67,11 @@ def gen_one_release(rng, rng_status, rng_triage, i, d, installs, has_reporter, e
         else:
             delay = rng.lognormvariate(math.log(ticket_med), ticket_sig)
         open_delay = int(delay) + 1
+        # A crash reporter build that uploads on a fixed sync schedule: the crash is opened in
+        # the tracker on the first sync day after it, so every one of its crash reports lands
+        # on a multiple of the sync interval (30 here: lags 30, 60, 90).
+        if crash and crash_sync:
+            open_delay = crash_sync * ((open_delay + crash_sync - 1) // crash_sync)
 
         # reported_date lags opened_date by a triage queue for tickets; crash reports have
         # no queue, so the two dates are the same day. Whether a report exists in the export
@@ -205,31 +210,36 @@ def main():
     special_versions = {}
     # Releases the natural schedule never lands on exactly, pinned to dates chosen instead of
     # accumulated from a random gap, so a specific boundary always has a release sitting on it.
-    # Both products get an age-59 release: one day past a thirty-day column edge, so the ordinary
-    # off-by-one floor(age/30) picks the day-30 column instead of the day-60 one, a much steeper
-    # part of the curve where the two divisors are far apart. Both also get:
+    # Both products get an age-60 release, sitting exactly on a thirty-day column edge: it has
+    # 61 days of history, lags 0 to 60, so its sixty-day column is complete, and a reader who
+    # gives a release only as many days of history as its age steps down to the thirty-day
+    # column, a much steeper part of the curve where the two divisors are far apart. Both also
+    # get:
     #   age 365  the finished cohort's own inclusive edge, so an off-by-one ">" instead of ">="
     #            drops a release whose whole day-365 record is in the file;
     #   age 400  kept on the forecast list though it is long past the horizon, so a program has
     #            to handle a release the curve has nothing left to say about.
-    # The other product also gets age 209: residue 29 mod 30 like age 59, a second release where
-    # floor(age/30) and floor((age+1)/30) disagree. Each is drawn from its own independent stream
-    # keyed by its age, so tuning one never shifts another's reports, and all go through
-    # gen_one_release exactly like any other release.
+    # The other product also gets age 210, a second release on a column edge. Each is drawn from
+    # its own independent stream keyed by its age, so tuning one never shifts another's reports,
+    # and all go through gen_one_release exactly like any other release.
     #
     # The age-365 release has to be big enough, and its crash reports slow enough to arrive, that
     # dropping it from the crash pool moves an early share well past the 0.05 bar. Tickets pool
     # over every finished release, so one more barely moves that curve; crash reports pool only
     # over the reporter releases, so one heavy release carries real weight. This is a major push,
-    # installed far more widely, that shipped with an early crash-reporter build phoning reports
-    # home in slow batches, so its crash arrival is much slower than the pool's while its tickets
-    # behave normally; it is fully caught up by day 60, so only the day-30 share moves and no
-    # forecast release, which all sit at day-60 or later, is grossed up by it. The shipped line's
-    # crash pool is a fifth the size of the other's, so a three-fold push moves it as far as an
-    # eighteen-fold one moves the other. The age-400 release's users were a little slower to
-    # file tickets, enough that its own last complete column reads below its finished total.
-    # Every age-59 release is an ordinary reporter release.
-    age_set = (209, 365, 400, 59) if a.hidden else (59, 365, 400)
+    # installed far more widely, that shipped with an early crash-reporter build which uploaded
+    # its logs on a monthly sync, so every one of its crash reports is opened on day 30, 60 or
+    # 90 after the release, while its tickets behave normally. Two readings bite on it: leaving
+    # it out of the cohort moves the thirty-day crash share by far more than the bar, and a
+    # curve that reads "opened by day 30" as "before day 30" leaves the whole day-30 batch out
+    # and misses by as much again. It is fully caught up by day 90, and no forecast release
+    # divides by a column before its sixtieth day, where the reporter releases' own crash
+    # reports are all in either way. The shipped line's crash pool is a fifth the size of the
+    # other's, so a three-fold push moves it as far as an eighteen-fold one moves the other.
+    # The age-400 release's users were a little slower to file tickets, enough that its own
+    # last complete column reads below its finished total. Every age-60 release is an ordinary
+    # reporter release.
+    age_set = (210, 365, 400, 60) if a.hidden else (60, 365, 400)
     for age_days in age_set:
         i = len(releases)
         version = f"{major}.{i}"
@@ -243,6 +253,7 @@ def main():
             mu_installs = installs_mu + math.log(18.0 if a.hidden else 3.0)
             release_kwargs["crash_med"] = 30.0
             release_kwargs["crash_sig"] = 0.30
+            release_kwargs["crash_sync"] = 30
         if age_days == 400:
             release_kwargs["ticket_med"] = gen_kwargs["ticket_med"] * 1.3
         installs = int(rs.lognormvariate(mu_installs, 0.35))
@@ -273,63 +284,33 @@ def main():
         if opened <= export:
             reports.append((pilot_version, opened, "crash", "open", opened))
 
-    to_forecast = [v for v, rd, _, _ in releases if 60 <= (export - rd).days < 210]
-    # The age-59 release is younger than the 60-day floor above but is still asked for on both
-    # products, so a forecast release always sits one day past a column edge; the age-400
-    # release is kept on the list though it is long past the horizon (see the special releases
-    # above).
-    to_forecast.append(special_versions[59])
+    to_forecast = [v for v, rd, _, _ in releases if 60 <= (export - rd).days <= 210]
+    # The age-60 release sits on the floor of that range and is asked for on both products, so
+    # a forecast release always sits exactly on a column edge; the age-400 release is kept on
+    # the list though it is long past the horizon (see the special releases above).
+    if special_versions[60] not in to_forecast:
+        to_forecast.append(special_versions[60])
     to_forecast.append(special_versions[400])
 
-    # One forecast release carries a batch of tickets that were all opened on the same day, the
-    # day its last whole thirty-day column closes: every copy installed on release day ran its
-    # built-in trial licence out that morning, and the group walked into the same expiry defect
-    # together. The day is a column edge, so a count over that column holds these reports only
-    # if the boundary is read inclusively; nothing grades that reading any more, but the batch
-    # is part of the exports as they shipped and stays. The release chosen is the youngest one
-    # on the forecast list whose column edge fell at least five days before the export date, so
-    # the whole batch is inside the export window.
-    burst_mean = 26.0 if a.hidden else 13.0
-    rng_burst = random.Random(a.seed * 1_000_003 + 19)
-    burst_version = None
-    for version, rd, _installs, _has in sorted(releases, key=lambda r: r[1], reverse=True):
-        if version not in to_forecast:
-            continue
-        age = (export - rd).days
-        edge = 30 * min((age + 1) // 30, 12)
-        if age - edge >= 5:
-            burst_version, burst_date, burst_edge = version, rd, edge
-            break
-    if burst_version is not None:
-        n_burst = poisson(rng_burst, burst_mean)
-        opened = burst_date + dt.timedelta(days=burst_edge)
-        for _ in range(n_burst):
-            gap = int(rng_burst.lognormvariate(math.log(triage_med), triage_sig))
-            reported = min(opened + dt.timedelta(days=gap), export)
-            reports.append((burst_version, reported, "ticket", "open", opened))
-        truth[burst_version]["reports_within_365_days"] += n_burst
-        print(f"  boundary batch: {n_burst} tickets on {burst_version}, all opened "
-              f"{burst_edge} days after it shipped ({opened.isoformat()})")
-
-    # The shipped product's age-59 release carries a second batch, crash reports this time, and
-    # none of them inside its first thirty days: the month-end close crashed for everyone who ran
-    # it on the last day of the first full calendar month the release spent live, so the batch
-    # shares one opened_date, fifty-eight days after it shipped, and the crash reporter filed
-    # every one the same day. This is the case that separates floor((age+1)/30) complete columns
-    # from floor(age/30) on a visible release: a release 59 days old has 60 days of history, the
-    # right reading takes the sixty-day column and counts the batch, the off-by-one takes the
+    # The shipped product's age-60 release carries a batch of crash reports, none of them inside
+    # its first thirty days: the month-end close crashed for everyone who ran it on the last day
+    # of the first full calendar month the release spent live, so the batch shares one
+    # opened_date, fifty-nine days after it shipped, and the crash reporter filed every one the
+    # same day. This is the case that separates the right column count from the off-by-one on a
+    # visible release: a release 60 days old has 61 days of history, so its sixty-day column is
+    # complete and counts the batch; a reader who gives it sixty days of history takes the
     # thirty-day column and never sees it, and by itself the release's two column estimates
     # agree to a fraction of a report. Because a crash report arrives within days, the sixty-day
     # crash share is one, so the batch grosses up to itself and the reference is not pushed off
     # the truth by it. The other product gets no such batch on purpose: its age-365 slow-reporter
-    # release pulls the pooled thirty-day crash share down to about 0.69, so the same off-by-one
-    # already reads its age-59 release a quarter too high, and a batch it cannot see would only
+    # release pulls the pooled thirty-day crash share down to about 0.7, so the same off-by-one
+    # already reads its age-60 release a quarter too high, and a batch it cannot see would only
     # pull that reading back toward the truth. The verifier's fixture check asserts the
     # separation on both exports.
     if not a.hidden:
         rng_close = random.Random(a.seed * 1_000_003 + 23)
-        close_version = special_versions[59]
-        close_date = export - dt.timedelta(days=59)
+        close_version = special_versions[60]
+        close_date = export - dt.timedelta(days=60)
         opened = export.replace(day=1) - dt.timedelta(days=1)
         n_close = poisson(rng_close, 150.0)
         for _ in range(n_close):

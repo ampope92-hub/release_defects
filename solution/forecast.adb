@@ -19,9 +19,9 @@
 --  reports, which have no queue.
 --
 --  A release's age in days, and so which columns the export holds complete for it, is still a
---  calendar fact and never moves: an X day old release has X+1 days of history, so it holds
---  floor((X+1)/30) complete 30-day columns. An N-day column counts a report if its opened lag
---  is 0 to N-1; the day-365 total counts opened lag 0 to 365.
+--  calendar fact and never moves: an X day old release has X+1 days of history, opened lags 0
+--  to X, so an N-day column is complete once N <= X and it holds floor(X/30) of them. An N-day
+--  column counts a report opened by day N, lag 0 to N; the day-365 total counts lag 0 to 365.
 --
 --  Usage: forecast <data-dir> <output-json>
 
@@ -49,7 +49,7 @@ procedure Forecast is
       Version   : Unbounded_String;
       Day       : Integer;            --  release date as a day number
       Reporter  : Boolean;            --  ships the crash reporter
-      Complete  : Natural;            --  columns available to forecast from, floor((Age+1)/30)
+      Complete  : Natural;            --  columns available to forecast from, floor(Age/30)
                                        --  capped at Columns - 1; independent of whether the
                                        --  release has finished collecting
       Finished  : Boolean;            --  Age >= Horizon: eligible for the arrival-curve cohort
@@ -146,13 +146,14 @@ procedure Forecast is
       return 0;
    end Find_Release;
 
-   --  Complete thirty-day columns available to divide a forecast by: floor((Age+1)/30), the
-   --  same rule at every age, capped at Columns - 1 because the curve only publishes points up
-   --  to 360 days (age 359 already reaches that cap). This never special-cases Age >= Horizon:
-   --  whether a release is old enough to feed the curve and which column a forecast reads off
-   --  it are two different facts, kept in two different fields.
+   --  Complete thirty-day columns available to divide a forecast by: floor(Age/30), the same
+   --  rule at every age (a release's history runs to lag Age inclusive, the export date being
+   --  in the file), capped at Columns - 1 because the curve only publishes points up to 360
+   --  days. This never special-cases Age >= Horizon: whether a release is old enough to feed
+   --  the curve and which column a forecast reads off it are two different facts, kept in two
+   --  different fields.
    function Complete_Columns (Age : Integer) return Natural is
-      N : Integer := (Age + 1) / 30;
+      N : Integer := Age / 30;
    begin
       if N > Columns - 1 then
          N := Columns - 1;
@@ -168,7 +169,7 @@ procedure Forecast is
       if P = Columns - 1 then
          return Horizon;
       end if;
-      return 30 * (P + 1) - 1;
+      return 30 * (P + 1);
    end Column_Limit;
 
    procedure Read_Policy (Path : String) is
@@ -446,7 +447,6 @@ begin
             Put (Result, ",");
          end if;
          Put (Result, """" & To_String (Forecast_Versions (J)) & """:" & Trim (Natural'Image (N), Ada.Strings.Left));
-         Put_Line (Standard_Error, To_String (Forecast_Versions (J)) & ": " & Trim (Natural'Image (N), Ada.Strings.Left));
       end;
    end loop;
    Put (Result, "},""arrival_share"":{""ticket"":{");

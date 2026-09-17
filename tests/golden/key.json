@@ -11,8 +11,8 @@
     "4.25": 242,
     "4.26": 466,
     "4.27": 80,
-    "4.28": 209,
-    "4.31": 360,
+    "4.28": 195,
+    "4.31": 288,
     "4.33": 200
   },
   "tolerance_per_release": 0.2,
@@ -159,7 +159,7 @@
       "release_date": "2025-05-12"
     },
     "4.28": {
-      "reports_within_365_days": 209,
+      "reports_within_365_days": 195,
       "true_rate_per_10k": 5.382,
       "release_date": "2025-06-23"
     },
@@ -174,9 +174,9 @@
       "release_date": "2025-08-27"
     },
     "4.31": {
-      "reports_within_365_days": 360,
-      "true_rate_per_10k": 6.001,
-      "release_date": "2025-07-04"
+      "reports_within_365_days": 288,
+      "true_rate_per_10k": 3.754,
+      "release_date": "2025-07-03"
     },
     "4.32": {
       "reports_within_365_days": 1632,

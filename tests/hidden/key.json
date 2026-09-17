@@ -12,9 +12,9 @@
     "7.32": 191,
     "7.33": 635,
     "7.34": 614,
-    "7.35": 888,
-    "7.38": 640,
-    "7.41": 1138,
+    "7.35": 868,
+    "7.38": 564,
+    "7.41": 1190,
     "7.40": 637
   },
   "tolerance_per_release": 0.17,
@@ -196,7 +196,7 @@
       "release_date": "2025-04-01"
     },
     "7.35": {
-      "reports_within_365_days": 888,
+      "reports_within_365_days": 868,
       "true_rate_per_10k": 43.794,
       "release_date": "2025-04-29"
     },
@@ -211,9 +211,9 @@
       "release_date": "2025-07-08"
     },
     "7.38": {
-      "reports_within_365_days": 640,
-      "true_rate_per_10k": 25.971,
-      "release_date": "2025-01-07"
+      "reports_within_365_days": 564,
+      "true_rate_per_10k": 23.911,
+      "release_date": "2025-01-06"
     },
     "7.39": {
       "reports_within_365_days": 8259,
@@ -226,9 +226,9 @@
       "release_date": "2024-06-30"
     },
     "7.41": {
-      "reports_within_365_days": 1138,
-      "true_rate_per_10k": 30.522,
-      "release_date": "2025-06-06"
+      "reports_within_365_days": 1190,
+      "true_rate_per_10k": 34.246,
+      "release_date": "2025-06-05"
     }
   }
 }

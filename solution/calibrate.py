@@ -26,9 +26,12 @@ against the counts those releases actually reached:
                          were real, growing releases.
   by_source_ignore_both    both facts missed at once.
 
-Columns are 30 days wide and only complete columns are used, with a final column for everything
-by day 365. Scores are the worst per-release error, the error on the total, and how many
-releases land inside the policy's tolerance.
+Columns are 30 days wide, a report is in the N-day column when it was opened by day N (the day
+itself included), and only complete columns are used, with a final column for everything by day
+365. Scores are the worst per-release error, the error on the total, and how many releases land
+inside the policy's tolerance. The back-test the verifier runs (each export cut off 200 days
+early, the releases young then held to what they reached) is scored the same way for the
+reference route, so the bars are known to clear it across seeds.
 
     calibrate.py [--seeds N]
 """
@@ -58,13 +61,15 @@ def load(d):
 
 
 def complete_columns(age):
+    """A release A days old has lags 0..A in the file (the export date included), so its N-day
+    column, reports opened by day N, is complete once N <= A: floor(A/30) of them."""
     if age >= 365:
         return COLUMNS
-    return max(0, min(COLUMNS - 1, (age + 1) // STEP))
+    return max(0, min(COLUMNS - 1, age // STEP))
 
 
 def column_limit(p):
-    return 365 if p == COLUMNS - 1 else STEP * (p + 1) - 1
+    return 365 if p == COLUMNS - 1 else STEP * (p + 1)
 
 
 def triangle(rel, reps, export, source=None, versions=None, date_field="opened_date", filter_status=True):
@@ -173,7 +178,7 @@ def main():
     a = ap.parse_args()
     fmt = lambda v: f"{st.mean(v):.3f} [{min(v):.3f},{max(v):.3f}]"
     for label, extra in [("ledgerdesk, the shipped export", []), ("fieldbook-mobile, the other product", ["--hidden"])]:
-        res = {}
+        res, back = {}, []
         with tempfile.TemporaryDirectory() as tmp:
             for seed in range(a.seeds):
                 d = pathlib.Path(tmp) / f"s{seed}"
@@ -184,10 +189,21 @@ def main():
                 out, pol = routes(d / "data")
                 for name, f in out.items():
                     res.setdefault(name, []).append(score(f, key, pol))
+                # the verifier's back-test on this seed, when the cut-off export supports one
+                cut = subprocess.run([sys.executable, str(HERE.parent / "tests" / "truncate.py"), str(d / "data"), str(d / "earlier"), "200"],
+                                     capture_output=True, check=False)
+                if cut.returncode == 0:
+                    with open(d / "earlier" / "key.json") as fh:
+                        bkey = json.load(fh)
+                    bout, bpol = routes(d / "earlier" / "data")
+                    back.append(score(bout["chain_ladder_by_source"], bkey, bpol))
         print(f"== {label}, {a.seeds} seeds")
         for name, v in res.items():
             c = list(zip(*v))
             print(f"   {name:24s} worst release {fmt(c[0])}   total {fmt(c[1])}   inside {' '.join(f'{i}/{n}' for i, n in zip(c[2], c[3]))}   passes {sum(c[4])}/{len(c[4])}")
+        if back:
+            c = list(zip(*back))
+            print(f"   back-test, reference     worst release {fmt(c[0])}   total {fmt(c[1])}   passes {sum(c[4])}/{len(c[4])} of {len(back)} seeds with a back-test")
     print("== the pinned exports")
     for label, d, k in [("shipped", HERE.parent / "environment" / "data", HERE.parent / "tests" / "golden" / "key.json"),
                         ("hidden", HERE.parent / "tests" / "hidden" / "data", HERE.parent / "tests" / "hidden" / "key.json")]:

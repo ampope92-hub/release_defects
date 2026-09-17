@@ -11,6 +11,15 @@ echo 0 > /logs/verifier/reward.txt
 # Fold stderr into stdout: only stdout survives into the feedback bundle.
 exec 2>&1
 
+# Everything this script creates from here on is root-only from the moment it exists: the
+# probe captures, the record of the horizons and the argument count drawn for this run, the
+# staged copies of the exports. Nothing is written world-readable and closed afterwards, so
+# there is never a window in which the binary, running as the build user between two probes,
+# could read what the verifier has drawn or recorded so far. The few things the build user has
+# to reach (the staged export directories, the binary itself) are opened by name below.
+umask 077
+chmod 700 /opt 2>/dev/null || true
+
 as_runner() {
   setpriv --clear-groups --no-new-privs --reuid runner --regid runner "$@"
 }
@@ -53,6 +62,23 @@ find /app/data -maxdepth 1 -type f -exec cp -- {} /opt/data_pristine/ \;
 chmod -R go-w /opt/data_pristine
 cp -a /app/forecast /opt/forecast_pristine
 chmod -R go-w /opt/forecast_pristine
+
+# The back-test the instruction names: each export cut off 200 days before its export date, the
+# releases that were between 60 and 210 days old then and have since finished collecting on its
+# forecast list, and the count each of them went on to reach read off the full export as the
+# key. Staged now, by root, from the pristine copies, before any agent code runs; the program
+# is handed each cut-off export after the two graded runs below and its forecasts are held to
+# those counts under the same tolerances. Nothing on either key is held back: every count is in
+# the export the program was given, so the agent can run the same back-test on its own.
+mkdir -p /opt/earlier
+for product in shipped hidden; do
+  src=/opt/data_pristine; [ "$product" = hidden ] && src=/opt/hidden/data
+  if ! /usr/local/bin/python3 -P /tests/truncate.py "$src" "/opt/earlier/$product" 200; then
+    echo "FATAL: the $product export could not be cut off for the back-test, so this run cannot be graded"
+    echo 0 > /logs/verifier/reward.txt
+    exit 0
+  fi
+done
 
 # The task states the tool lives in Ada and that the box carries nothing past the Ada runtime.
 # This image ships a Python interpreter because pytest scores the result with it, and the
@@ -131,6 +157,7 @@ as_runner bash -c 'kill -9 -1' 2>/dev/null || true
 if [ "$bstatus" -eq 0 ] && [ -x /app/build_iso/forecast ]; then
   mv /app/build_iso/forecast /app/forecast/forecast
   chown runner:runner /app/forecast/forecast
+  chmod 755 /app/forecast/forecast
 else
   echo "the collected sources did not build into /app/forecast/forecast"
 fi
@@ -247,8 +274,8 @@ lock_project() {
 
 # run_once <data-dir> <output-path> <capture-path>: run the built binary on an export, as the
 # build user, with every tool closed, from /app/forecast, and move what it wrote to a root-only
-# path. The output path is the second argument the instruction documents, and the two runs ask for
-# a different, freshly randomized name each (rand_name, the same generator every probe below uses
+# path. The output path is the second argument the instruction documents, and the graded runs ask
+# for a different, freshly randomized name each (rand_name, the same generator every probe below uses
 # too), so a program that ignores the argument and writes a fixed file is caught rather than
 # graded, and nothing about the name itself tells this run apart from a probe. Only a regular file
 # is ever staged: the binary cannot read the keys, but it can drop a symlink at the output path
@@ -298,8 +325,9 @@ run_once() {
 
 # The instruction says what the program does when it is handed anything other than two
 # arguments: a line on standard error, nothing on standard output, exit 2, nothing written.
-# Every count from zero through forty is probed below, forty cases rather than a handful, so a
-# program that refuses a few counts and answers another normally is caught. The check is only of
+# Every count from zero through forty is probed below, forty cases rather than a handful, and
+# one more drawn from 41..5000 on every run, so a program that refuses a few counts and answers
+# another normally, or stops refusing past the fixed loop, is caught. The check is only of
 # the output path the call actually names (the second argument, when there is one, handed over
 # exactly as the graded runs get it): a run of zero or one arguments names no output path at
 # all, so there is nothing to check there beyond exit status and stderr -- and the same
@@ -346,32 +374,48 @@ probe_args() {
   echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written${violation:+, VIOLATION: $violation}"
 }
 
+# The records of what this run drew, root-only from the moment they exist (umask above, and a
+# directory nobody else can enter); pytest reads them to know what to look for.
+install -d -m 700 /opt/draws
+rnd() { od -An -tu4 -N4 /dev/urandom | tr -d ' \n'; }
+
 echo "=== what it does when the argument count is wrong ==="
-for n in $(seq 0 40); do
+# Every count from zero through forty, and then one more drawn from 41..5000 on every run and
+# printed, so the promise is sampled well past any cutoff a program could have read off the
+# fixed loop.
+drawn_arity=$(( $(rnd) % 4960 + 41 ))
+printf '%s\n' "$drawn_arity" > /opt/draws/arity.txt
+echo "argument count drawn for this run: $drawn_arity"
+for n in $(seq 0 40) "$drawn_arity"; do
   [ "$n" -eq 2 ] && continue
+  tag="argc_${n}"; [ "$n" -eq "$drawn_arity" ] && tag="argc_drawn"
   case "$n" in
-    0) probe_args "argc_0" ;;
-    1) probe_args "argc_1" /app/data ;;
+    0) probe_args "$tag" ;;
+    1) probe_args "$tag" /app/data ;;
     *)
       extras=()
       for ((e = 3; e <= n; e++)); do
         extras+=("extra$((e - 2))")
       done
-      probe_args "argc_${n}" /app/data "/app/out/$(rand_name)" "${extras[@]}"
+      probe_args "$tag" /app/data "/app/out/$(rand_name)" "${extras[@]}"
       ;;
   esac
 done
 
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
-# so without cases of its own nothing would stop a program that never reads the key. Eleven fixed
-# values sample the promise: close to 365, far from it, one too long for any integer type, and
-# four JSON numbers that begin with the digits 365 and are not the integer 365 (365.0, 365e0,
-# 3.65e2, 3650e-1), which a parser that stops at the first non-digit reads as 365. Then eight more
-# are drawn fresh on every run from /dev/urandom and printed below, so the set a program would
-# have to know is not a set at all: integers across 1..10000 other than 365, a negative, a
-# fraction, an exponent form and a numeral of twenty to forty digits. Staging a whole export for
-# a horizon costs a copy of the report log, so this stays a sample rather than the exhaustive
-# range the argument counts above get.
+# so without cases of its own nothing would stop a program that never reads the key. The rule is
+# universal, anything but the integer 365, and a universal rule over every JSON value cannot be
+# run to exhaustion, so it is sampled, and the instruction says so: fixed values and values drawn
+# fresh on every run. Sixteen fixed: close to 365, far from it, one numeral too long for any
+# integer type, four JSON numbers that begin with the digits 365 and are not the integer 365
+# (365.0, 365e0, 3.65e2, 3650e-1), which a parser that stops at the first non-digit reads as 365,
+# and five values of another JSON type that carry the same digits or no number at all (the string
+# "365", true, null, [365], {"v":365}), which a parser that coerces a string to an integer, or
+# skips to the first digits it can find, reads as 365. Then eight more are drawn from /dev/urandom
+# and printed below, so the set a program would have to know is not a set at all: integers across
+# 1..10000 other than 365, a negative, a fraction, an exponent form and a numeral of twenty to
+# forty digits. Staging a whole export for a horizon costs a copy of the report log, so this stays
+# a sample rather than the exhaustive range the argument counts above get.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
@@ -380,27 +424,35 @@ done
 # the fixed argprobe.json this used to be: nothing about either name says which kind of run it is.
 echo "=== what it does when the policy asks for another horizon ==="
 run_horizon_probe() {
-  local value="$1" dir
+  # <tag> names the capture files (a plain token, so a value with quotes or brackets never
+  # becomes part of a path); <value> is the JSON text written after the colon.
+  local tag="$1" value="$2" dir
   dir="$(mktemp -d /app/XXXXXXXXXX)"
   find /opt/data_pristine -maxdepth 1 -type f ! -name policy.json -exec cp -- {} "$dir"/ \;
   sed "s/\"horizon_days\"[[:space:]]*:[[:space:]]*365/\"horizon_days\": ${value}/" \
     /opt/data_pristine/policy.json > "$dir/policy.json"
-  grep -q "\"horizon_days\": ${value}" "$dir/policy.json" \
+  grep -qF -- "\"horizon_days\": ${value}" "$dir/policy.json" \
     || echo "WARNING: the horizon probe for ${value} did not get a changed policy, so it proves nothing"
   # Root keeps ownership: the binary only has to read the export, and a directory it owned would
   # let it restore write bits and rewrite the policy from inside the run.
   chmod -R a-w,a+rX "$dir"
-  probe_args "horizon_${value}" "$dir" "/app/out/$(rand_name)"
+  probe_args "horizon_${tag}" "$dir" "/app/out/$(rand_name)"
   rm -rf "$dir"
 }
 # The twenty-digit numeral is another horizon, and one no 32-bit integer holds, so a program that
-# converts the figure before comparing it has to refuse it rather than die on it.
+# converts the figure before comparing it has to refuse it rather than die on it. The tag of each
+# fixed value is the value itself where that is a plain token, and a word for the others.
 for h in 30 90 364 366 400 1000 99999999999999999999 365.0 365e0 3.65e2 3650e-1; do
-  run_horizon_probe "$h"
+  run_horizon_probe "$h" "$h"
 done
-# The drawn set. pytest reads /opt/horizon_random.txt to know what to look for and fails if it
-# does not hold eight values, so a run that skipped these cannot pass by their absence.
-rnd() { od -An -tu4 -N4 /dev/urandom | tr -d ' \n'; }
+run_horizon_probe str365 '"365"'
+run_horizon_probe true true
+run_horizon_probe null null
+run_horizon_probe list365 '[365]'
+run_horizon_probe obj365 '{"v":365}'
+# The drawn set, recorded root-only as it is drawn (umask, and /opt/draws is closed). pytest reads
+# the record to know what to look for and fails if it does not hold eight values, so a run that
+# skipped these cannot pass by their absence.
 drawn=()
 for i in 1 2 3 4; do
   v=$(( $(rnd) % 10000 + 1 )); [ "$v" -eq 365 ] && v=$(( v + 1 + $(rnd) % 100 ))
@@ -411,13 +463,12 @@ drawn+=("$(( $(rnd) % 1000 )).$(( $(rnd) % 90 + 10 ))")
 drawn+=("$(( $(rnd) % 999 + 1 ))e$(( $(rnd) % 4 ))")
 big="$(( $(rnd) % 9 + 1 ))$(od -An -tu1 -N$(( 19 + $(rnd) % 20 )) /dev/urandom | tr -d ' \n' | tr -d -c '0-9' | cut -c1-39)"
 drawn+=("$big")
-: > /opt/horizon_random.txt
+: > /opt/draws/horizons.txt
 echo "horizons drawn for this run: ${drawn[*]}"
 for h in "${drawn[@]}"; do
-  echo "$h" >> /opt/horizon_random.txt
-  run_horizon_probe "$h"
+  echo "$h" >> /opt/draws/horizons.txt
+  run_horizon_probe "$h" "$h"
 done
-chmod 600 /opt/horizon_random.txt
 
 chown root:root /opt/argprobe_*.txt 2>/dev/null || true
 chmod 600 /opt/argprobe_*.txt 2>/dev/null || true
@@ -437,6 +488,19 @@ chmod -R a-w,a+rX "$staged"
 echo "=== the same binary on the other product's export ==="
 run_once "$staged" "/app/out/$(rand_name)" /opt/run_hidden.json
 rm -rf "$staged"
+
+# The back-test: each export cut off 200 days before its export date (staged by root at the top,
+# before any agent code ran), handed over exactly like the other product's export. The releases
+# on its forecast list have all since finished collecting, and the count each went on to reach
+# is on that export's key, read off the full export the program already had.
+for product in shipped hidden; do
+  staged="$(mktemp -d /app/XXXXXXXXXX)"
+  cp /opt/earlier/$product/data/*.csv /opt/earlier/$product/data/policy.json /opt/earlier/$product/data/README.md "$staged"/
+  chmod -R a-w,a+rX "$staged"
+  echo "=== the same binary on the $product export cut off 200 days earlier ==="
+  run_once "$staged" "/app/out/$(rand_name)" "/opt/run_${product}_earlier.json"
+  rm -rf "$staged"
+done
 
 # Nothing the agent started may be alive while pytest runs or while the reward is written.
 as_runner bash -c 'kill -9 -1' 2>/dev/null || true

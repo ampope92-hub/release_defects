@@ -1,12 +1,13 @@
 """Verifier for the release forecast.
 
 test.sh compiles the agent's Ada itself, runs the binary once on the export that shipped and
-once on another product's export it has never seen, asking each run for a different output path,
-and captures what each wrote root-only.
+once on another product's export it has never seen, then once more on each of those exports cut
+off 200 days before its export date (the back-test the instruction names), asking each run for
+a different output path, and captures what each wrote root-only.
 This module only reads those captures and the keys under /opt: the number of reports each
 release had actually collected by day 365. It never runs agent code.
 
-Every bar here is stated in instruction.md, and the same bars apply to both runs.
+Every bar here is stated in instruction.md, and the same bars apply to all four runs.
 """
 import csv
 import datetime
@@ -23,17 +24,27 @@ SHIPPED_KEY = pathlib.Path("/opt/golden/key.json")
 HIDDEN_KEY = pathlib.Path("/opt/hidden/key.json")
 SHIPPED_DATA = pathlib.Path("/app/data")
 HIDDEN_DATA = pathlib.Path("/opt/hidden/data")
+# The back-test: each export cut off 200 days early by test.sh (tests/truncate.py), its forecast
+# list the releases that were young then and have since finished, its key the count each of them
+# went on to reach, read off the full export the program already had.
+EARLIER = pathlib.Path("/opt/earlier")
 
 SHIPPED_SHA = {
-    "releases.csv": "6e0be2d28bccc784550abea60dfa1924651afc1360ff44632f013e25d39c0b6f",
-    "reports.csv": "0e55df0f663f4d654141a478b89cc7c04f3d35474c2b7a7a6bf8c1bf3c95252e",
-    "policy.json": "8931b83d71d977b1343a56bef7f7a1a6b60181a9ce73850d9c950e7f83d57813",
+    "releases.csv": "e45226fc2ad46aeb1be626637ffa752bafa573279acd5b39d9ea8049cf03e8f2",
+    "reports.csv": "9e13926a0a037a96587bad18de24302144d4daa7478797402bd90fa63b7e36ad",
+    "policy.json": "839c27cfc21e2e071d5713d5c0f30ba31150894f1137d31e2e34e1a29be3d6bb",
     "README.md": "66a6e88b46f70e7902079f0ebf1bb89395d2e055ce44bbe8fbd043473a908a7f",
 }
 
-RUNS = [
+FULL_RUNS = [
     pytest.param(SHIPPED_RUN, SHIPPED_KEY, SHIPPED_DATA, id="shipped"),
     pytest.param(HIDDEN_RUN, HIDDEN_KEY, HIDDEN_DATA, id="hidden"),
+]
+RUNS = FULL_RUNS + [
+    pytest.param(pathlib.Path("/opt/run_shipped_earlier.json"), EARLIER / "shipped" / "key.json",
+                 EARLIER / "shipped" / "data", id="shipped-earlier"),
+    pytest.param(pathlib.Path("/opt/run_hidden_earlier.json"), EARLIER / "hidden" / "key.json",
+                 EARLIER / "hidden" / "data", id="hidden-earlier"),
 ]
 
 
@@ -111,9 +122,12 @@ def _true_share(data_dir, source):
 
     The README defines the day-365 count as open reports opened within 365 days of the release,
     so a duplicate or invalid report never reaches the curve and a report's age is read off
-    opened_date, not reported_date. Both boundaries are read strictly here (opened before the
-    age, not on it); on a pooled curve the difference is a few thousandths, well inside the
-    0.05 bar, so a program reading either way is not held to this choice."""
+    opened_date, not reported_date. "Opened by that age" is inclusive, lag 0 to N for the N-day
+    point, the same way the day-365 count is lag 0 to 365, and that reading is graded: each
+    export's age-365 release got its crash reports through a reporter build that uploaded on a
+    monthly sync, so they are opened on day 30, 60 or 90 exactly, and a curve that reads "by day
+    30" as "before day 30" leaves that whole batch out, 0.25 low at thirty days on the shipped
+    export and 0.29 on the other."""
     rel, reps = _rows(data_dir)
     export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
     cohort = {
@@ -130,7 +144,7 @@ def _true_share(data_dir, source):
                 lags.append(lag)
     if not lags:
         return None
-    return {a: sum(1 for L in lags if L < int(a)) / len(lags) for a in AGES}
+    return {a: sum(1 for L in lags if L <= int(a)) / len(lags) for a in AGES}
 
 
 def test_shipped_export_unmodified():
@@ -157,7 +171,11 @@ def _probe(tag):
     can write, and "wrote" means that file's size or timestamps moved; a call of zero or one
     arguments names no output path, so test.sh records "nothing" for those and there is nothing
     else to check there. The build user has nowhere else to create anything, so the
-    before/after listing is a belt, and "violation" should always be empty."""
+    before/after listing is a belt, and "violation" should always be empty.
+
+    Every capture and every record of what test.sh drew for this run is created root-only
+    (umask 077, and /opt/draws is a closed directory), so the binary, running as the build user
+    between two probes, can never read what has been drawn or recorded so far."""
     read = lambda part: pathlib.Path(f"/opt/argprobe_{tag}_{part}.txt").read_text()
     return (
         int(read("status").strip()), read("wrote").strip(), read("out"), read("err"),
@@ -165,12 +183,26 @@ def _probe(tag):
     )
 
 
-@pytest.mark.parametrize("arity", [n for n in range(41) if n != 2])
+DRAWN_ARITY_FILE = pathlib.Path("/opt/draws/arity.txt")
+DRAWN_ARITY = DRAWN_ARITY_FILE.read_text().strip() if DRAWN_ARITY_FILE.exists() else ""
+
+
+def test_an_argument_count_was_drawn():
+    """test.sh draws one more argument count, from 41 to 5000, on every run and records it; the
+    drawn case below is only as good as that record, so its absence fails here rather than
+    passing by having nothing to check."""
+    assert DRAWN_ARITY.isdigit() and 41 <= int(DRAWN_ARITY) <= 5000, (
+        f"expected a drawn argument count in {DRAWN_ARITY_FILE}, found {DRAWN_ARITY!r}"
+    )
+
+
+@pytest.mark.parametrize("arity", [n for n in range(41) if n != 2] + ["drawn"])
 def test_wrong_argument_count_is_refused(arity):
     """Every wrong argument count gets something on stderr, an empty stdout, exit 2 and nothing
     written. The instruction promises this for any count other than two; test.sh probes
     every count from zero through forty before the graded runs, forty cases rather than a
-    handful, so a program that answers one of them normally is caught.
+    handful, and one more drawn from 41..5000 on every run, so a program that answers one of
+    them normally, or that stops refusing past a cutoff, is caught.
 
     The instruction only says a usage line is printed; it does not fix the wording, so the check
     here is the part that is actually stated: something reaches stderr. A program that prints an
@@ -189,35 +221,40 @@ def test_wrong_argument_count_is_refused(arity):
     assert violation == "", f"{arity} arguments {violation}"
 
 
-FIXED_HORIZONS = [30, 90, 364, 366, 400, 1000, 99999999999999999999, "365.0", "365e0", "3.65e2", "3650e-1"]
-DRAWN_HORIZONS_FILE = pathlib.Path("/opt/horizon_random.txt")
+# (tag, the JSON text test.sh wrote after the colon); the tag names the capture files.
+FIXED_HORIZONS = [(str(v), str(v)) for v in (30, 90, 364, 366, 400, 1000, 99999999999999999999)]
+FIXED_HORIZONS += [(v, v) for v in ("365.0", "365e0", "3.65e2", "3650e-1")]
+FIXED_HORIZONS += [("str365", '"365"'), ("true", "true"), ("null", "null"), ("list365", "[365]"), ("obj365", '{"v":365}')]
+DRAWN_HORIZONS_FILE = pathlib.Path("/opt/draws/horizons.txt")
 DRAWN_HORIZONS = (
     [ln.strip() for ln in DRAWN_HORIZONS_FILE.read_text().splitlines() if ln.strip()]
     if DRAWN_HORIZONS_FILE.exists() else []
 )
 
 
-def _horizon_refused(horizon):
-    status, wrote, _out, err, violation = _probe(f"horizon_{horizon}")
-    assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
-    assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still wrote the output file it was handed"
-    assert err.strip() != "", f"a {horizon} day horizon it cannot answer passed without a word on stderr"
-    assert violation == "", f"a {horizon} day horizon {violation}"
+def _horizon_refused(tag, value):
+    status, wrote, _out, err, violation = _probe(f"horizon_{tag}")
+    assert status == 3, f"horizon_days {value} gave exit status {status}, not 3"
+    assert wrote == "nothing", f"horizon_days {value}, which it cannot answer, still wrote the output file it was handed"
+    assert err.strip() != "", f"horizon_days {value}, which it cannot answer, passed without a word on stderr"
+    assert violation == "", f"horizon_days {value}: {violation}"
 
 
-@pytest.mark.parametrize("horizon", FIXED_HORIZONS)
-def test_another_horizon_is_refused(horizon):
+@pytest.mark.parametrize("tag,value", FIXED_HORIZONS, ids=[t for t, _ in FIXED_HORIZONS])
+def test_another_horizon_is_refused(tag, value):
     """Handed a policy whose horizon_days is anything but the integer 365 the program says so on
     stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
-    could go unread. Eleven fixed values: two close to 365, two far from it, two round figures,
-    a twenty-digit numeral no 32-bit integer holds (a program that converts first and compares
-    after has to refuse it rather than die on the conversion), and four JSON numbers that begin
-    with the digits 365 and are not the integer 365: 365.0, 365e0, 3.65e2 and 3650e-1. A parser
-    that takes the run of digits after the colon and stops at the first other character reads
-    every one of those as 365 and answers a policy that asked for something else. Only what the
-    instruction states is checked: stdout is not, since the contract says nothing about it on
-    this path."""
-    _horizon_refused(horizon)
+    could go unread. The rule is universal and cannot be run to exhaustion, so it is sampled,
+    and the instruction says so. Sixteen fixed values: two close to 365, two far from it, two
+    round figures, a twenty-digit numeral no 32-bit integer holds (a program that converts
+    first and compares after has to refuse it rather than die on the conversion), four JSON
+    numbers that begin with the digits 365 and are not the integer 365 (365.0, 365e0, 3.65e2
+    and 3650e-1, which a parser that stops at the first non-digit reads as 365), and five
+    values of another JSON type: the string "365", true, null, [365] and {"v":365}, which a
+    parser that coerces a quoted number, or skips ahead to the first digits it finds, reads as
+    365. Only what the instruction states is checked: stdout is not, since the contract says
+    nothing about it on this path."""
+    _horizon_refused(tag, value)
 
 
 def test_eight_horizons_were_drawn():
@@ -235,38 +272,39 @@ def test_a_drawn_horizon_is_refused(horizon):
     other than 365, a negative, a fraction, an exponent form and a numeral of twenty to forty
     digits, all drawn fresh by test.sh for this run and printed in its log. A program that
     refuses the fixed values by name and answers the rest is caught here."""
-    _horizon_refused(horizon)
+    _horizon_refused(horizon, horizon)
 
 
 def _reports_by(data_dir, version, source, days):
     """Open (not duplicate or invalid) reports filed against one release from one source whose
-    opened_date, the day the user actually hit the bug, falls within its first `days`."""
+    opened_date, the day the user actually hit the bug, is by day `days` after the release."""
     rel, reps = _rows(data_dir)
     rd = datetime.date.fromisoformat(rel[version]["release_date"])
     return sum(
         1 for r in reps
         if r["version"] == version and r["source"] == source and r["status"] == "open"
-        and (datetime.date.fromisoformat(r["opened_date"]) - rd).days < days
+        and (datetime.date.fromisoformat(r["opened_date"]) - rd).days <= days
     )
 
 
-@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
-def test_a_release_sits_one_day_past_a_column_edge(run_path, key_path, data_dir):
+@pytest.mark.parametrize("run_path,key_path,data_dir", FULL_RUNS)
+def test_a_release_sits_on_a_column_edge(run_path, key_path, data_dir):
     """A check on the fixture, not on the run. The README states that a release A days old has
-    A+1 days of history in the file, so a release 59 days old holds two complete thirty-day
-    columns, not one. A program that reads floor(A/30) instead takes the column below on any
-    release whose age has remainder 29, and on an ordinary such release the two columns estimate
+    A+1 days of history in the file, the export date included, so a release exactly 60 days old
+    has its whole sixty-day column (opened by day 60) and holds two complete columns, not one.
+    A program that gives it only sixty days of history takes the column below on any release
+    whose age is a multiple of thirty, and on an ordinary such release the two columns estimate
     the same total to within a report, so its mere presence proves nothing. Each export must
-    carry a forecast release one day past a column edge whose reports are placed so that the
+    carry a forecast release exactly on a column edge whose reports are placed so that the
     figure read off the lower column misses the count it reached by more than that policy's
     tolerance_per_release. It fails loudly if a regeneration ever drops the case.
 
-    In the shipped export that release is 4.31, 59 days old, whose month-end close crashed for
-    everyone on day 58: a hundred and fifty-odd crash reports inside its sixty-day column and
-    none inside its thirty-day one, so the lower column reads about 248 against a count reached
-    of 360. In the other export it is 7.41, also 59 days old, where the slow-reporter release
-    pulls the pooled thirty-day crash share down to 0.69 and the lower column grosses an
-    ordinary release's crash reports up by a quarter."""
+    In the shipped export that release is 4.31, 60 days old, whose month-end close crashed for
+    everyone on day 59: a hundred and fifty-odd crash reports inside its sixty-day column and
+    none inside its thirty-day one, so the lower column reads about 155 against a count reached
+    of 288. In the other export it is 7.41, also 60 days old, where the slow-reporter release
+    pulls the pooled thirty-day crash share down to 0.72 and the lower column grosses an
+    ordinary release's crash reports up by a third, 1548 against 1190."""
     rel, _ = _rows(data_dir)
     export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
     real = _key(key_path)["reports_within_365_days"]
@@ -285,18 +323,18 @@ def test_a_release_sits_one_day_past_a_column_edge(run_path, key_path, data_dir)
     cases = {}
     for v in _policy(data_dir)["forecast_releases"]:
         age = (export - datetime.date.fromisoformat(rel[v]["release_date"])).days
-        right, lower = min((age + 1) // STEP, len(AGES)), min(age // STEP, len(AGES))
+        right, lower = min(age // STEP, len(AGES)), min((age - 1) // STEP, len(AGES))
         if lower < 1 or lower == right:
             continue
         cases[f"{v} at {age} days"] = abs(figure(v, lower) - real[v]) / real[v]
     assert cases, (
-        f"{data_dir}: no forecast release is one day past a column edge, so floor((A+1)/30) and "
-        f"floor(A/30) pick the same column for every graded release"
+        f"{data_dir}: no forecast release sits on a column edge, so floor(A/30) and "
+        f"floor((A-1)/30) pick the same column for every graded release"
     )
     best = max(cases, key=cases.get)
     assert cases[best] > tol, (
         f"{data_dir}: the lower column is not separated from the right one on any forecast release; "
-        f"the widest case is {best}, where reading floor(A/30) lands {cases[best]:.1%} from the "
+        f"the widest case is {best}, where reading floor((A-1)/30) lands {cases[best]:.1%} from the "
         f"count reached, inside the {tol:.0%} tolerance"
     )
 
@@ -322,7 +360,10 @@ def test_report_shape(run_path, key_path, data_dir):
 @pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
 def test_each_release_within_tolerance(run_path, key_path, data_dir):
     """Every forecast is within the policy's tolerance_per_release of the count the release
-    actually reached by day 365."""
+    actually reached by day 365. On the two cut-off exports this is the back-test the
+    instruction names: the releases asked for have since finished, and the count each went on
+    to reach is in the full export the program already had, so the reading that turns a young
+    release's reports and the arrival shares into a forecast is held to the record."""
     f = _forecast(run_path, data_dir)
     real = _key(key_path)["reports_within_365_days"]
     tol = _policy(data_dir)["tolerance_per_release"]
@@ -374,11 +415,12 @@ def test_arrival_share_shape(run_path, key_path, data_dir):
 def test_arrival_share_matches_the_finished_releases(run_path, key_path, data_dir):
     """Each reported curve is within 0.05 of the one the export's own finished releases carry.
     The two sources fill in at very different speeds, so a curve built without separating them
-    misses on at least one of them by far more than the bar. Each fact the README states moves
-    a point of the shipped curve by more than the bar on its own: a release exactly 365 days old
-    left out of the crash curve, 0.26 at 30 days; the pilot release's crash rows pooled in, 0.15
-    at 30 days; duplicate and invalid reports pooled in, 0.14 at 90 days on the ticket curve;
-    ages read off reported_date, 0.10 at 30 days."""
+    misses on at least one of them by far more than the bar. Each fact the README states, and
+    the instruction's "opened by that age", moves a point of the shipped curve by more than the
+    bar on its own: a release exactly 365 days old left out of the crash curve, 0.25 at 30 days;
+    the pilot release's crash rows pooled in, 0.16 at 30 days; duplicate and invalid reports
+    pooled in, 0.14 at 90 days on the ticket curve; ages read off reported_date, 0.10 at 30
+    days; "by day 30" read as "before day 30", 0.25 at 30 days."""
     a = _load(run_path)["arrival_share"]
     misses = []
     for src in ("ticket", "crash"):
