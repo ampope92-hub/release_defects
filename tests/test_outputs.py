@@ -97,13 +97,17 @@ def _rows(data_dir):
 
 
 def _true_share(data_dir, source):
-    """The arrival curve the export itself carries: at each thirty-day age, the share of a
-    finished release's day-365 count that had been opened by then, pooled over the releases that
-    have finished collecting, which the README defines as those at least 365 days old on the
-    export date. The crash curve is the reporter's, so it is pooled over the finished releases
-    whose crash_reporter column says yes; the README says which release carries crash rows that
-    did not come through it. Computed here from the same files the run was given, so this
-    compares the run against its own input rather than against anything held back.
+    """The arrival curve the export itself carries, as the instruction defines it: at each
+    thirty-day age, the share of the finished releases' day-365 reports, taken together as one
+    pile, that had been opened by then. Finished means the release has its whole day-365 record
+    in the file, which the README puts at 365 days old or more on the export date. One pile, not
+    the mean of the releases' own shares: both exports carry one very large, slow release (4.32,
+    7.39) that holds a large part of the pile, and the equal-weight mean reads up to 0.2 higher
+    at the thirty-day crash point, so the contract says which it is. The crash curve is the
+    reporter's, so its pile is the finished releases whose crash_reporter column says yes; the
+    README says which release carries crash rows that did not come through it. Computed here
+    from the same files the run was given, so this compares the run against its own input
+    rather than against anything held back.
 
     The README defines the day-365 count as open reports opened within 365 days of the release,
     so a duplicate or invalid report never reaches the curve and a report's age is read off
@@ -146,14 +150,14 @@ def test_nothing_was_added_to_the_export():
 
 
 def _probe(tag):
-    """What one probe run in test.sh did: exit status, whether the output path it was given (if
-    any) exists afterward, the two output streams, and any leftover-file violation test.sh's
-    check_after found for this call specifically. "wrote" answers only for
-    the output path named in the call; a call of zero or one arguments names no output path, so
-    test.sh always records "nothing" for those and there is nothing else to check there. Every
-    probe is bracketed by the same before/after check a graded run gets, not only the two graded
-    runs, so a probe can no longer plant something a later call's own baseline would treat as
-    having always been there."""
+    """What one probe run in test.sh did: exit status, whether the output file it was handed (if
+    any) was written, the two output streams, and any leftover-file violation test.sh's
+    check_after found for this call specifically. test.sh hands every invocation its output
+    path as an empty file it owns inside a root-owned directory, the one thing on the box it
+    can write, and "wrote" means that file's size or timestamps moved; a call of zero or one
+    arguments names no output path, so test.sh records "nothing" for those and there is nothing
+    else to check there. The build user has nowhere else to create anything, so the
+    before/after listing is a belt, and "violation" should always be empty."""
     read = lambda part: pathlib.Path(f"/opt/argprobe_{tag}_{part}.txt").read_text()
     return (
         int(read("status").strip()), read("wrote").strip(), read("out"), read("err"),
@@ -163,8 +167,8 @@ def _probe(tag):
 
 @pytest.mark.parametrize("arity", [n for n in range(41) if n != 2])
 def test_wrong_argument_count_is_refused(arity):
-    """Every wrong argument count gets something on stderr, an empty stdout, exit 2 and no output
-    file created. The instruction promises this for any count other than two; test.sh probes
+    """Every wrong argument count gets something on stderr, an empty stdout, exit 2 and nothing
+    written. The instruction promises this for any count other than two; test.sh probes
     every count from zero through forty before the graded runs, forty cases rather than a
     handful, so a program that answers one of them normally is caught.
 
@@ -179,25 +183,59 @@ def test_wrong_argument_count_is_refused(arity):
     fails here."""
     status, wrote, out, err, violation = _probe(f"argc_{arity}")
     assert status == 2, f"{arity} arguments gave exit status {status}, not 2"
-    assert wrote == "nothing", f"{arity} arguments still created the output file it was told to use"
+    assert wrote == "nothing", f"{arity} arguments still wrote the output file it was handed"
     assert out == "", f"{arity} arguments put this on stdout, which the contract says stays empty: {out[:200]!r}"
     assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
     assert violation == "", f"{arity} arguments {violation}"
 
 
-@pytest.mark.parametrize("horizon", [30, 90, 364, 366, 400, 1000, 99999999999999999999])
-def test_another_horizon_is_refused(horizon):
-    """Handed a policy asking for any horizon but 365 the program says so on stderr, creates no
-    output file and exits 3. Both graded exports say 365, so without this the key could go unread.
-    Seven horizons are probed: two close to 365, two far from it, two round figures and a
-    twenty-digit numeral no 32-bit integer holds, so a program that converts first and compares
-    after has to refuse it rather than die on the conversion. Only what the instruction states is
-    checked: stdout is not, since the contract says nothing about it on this path."""
+FIXED_HORIZONS = [30, 90, 364, 366, 400, 1000, 99999999999999999999, "365.0", "365e0", "3.65e2", "3650e-1"]
+DRAWN_HORIZONS_FILE = pathlib.Path("/opt/horizon_random.txt")
+DRAWN_HORIZONS = (
+    [ln.strip() for ln in DRAWN_HORIZONS_FILE.read_text().splitlines() if ln.strip()]
+    if DRAWN_HORIZONS_FILE.exists() else []
+)
+
+
+def _horizon_refused(horizon):
     status, wrote, _out, err, violation = _probe(f"horizon_{horizon}")
     assert status == 3, f"a {horizon} day horizon gave exit status {status}, not 3"
-    assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still created the output file it was told to use"
+    assert wrote == "nothing", f"a {horizon} day horizon it cannot answer still wrote the output file it was handed"
     assert err.strip() != "", f"a {horizon} day horizon it cannot answer passed without a word on stderr"
     assert violation == "", f"a {horizon} day horizon {violation}"
+
+
+@pytest.mark.parametrize("horizon", FIXED_HORIZONS)
+def test_another_horizon_is_refused(horizon):
+    """Handed a policy whose horizon_days is anything but the integer 365 the program says so on
+    stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
+    could go unread. Eleven fixed values: two close to 365, two far from it, two round figures,
+    a twenty-digit numeral no 32-bit integer holds (a program that converts first and compares
+    after has to refuse it rather than die on the conversion), and four JSON numbers that begin
+    with the digits 365 and are not the integer 365: 365.0, 365e0, 3.65e2 and 3650e-1. A parser
+    that takes the run of digits after the colon and stops at the first other character reads
+    every one of those as 365 and answers a policy that asked for something else. Only what the
+    instruction states is checked: stdout is not, since the contract says nothing about it on
+    this path."""
+    _horizon_refused(horizon)
+
+
+def test_eight_horizons_were_drawn():
+    """test.sh draws eight more horizons from /dev/urandom on every run and records them; the
+    drawn cases below are only as good as that record, so its absence or a short list fails
+    here rather than passing by having nothing to check."""
+    assert len(DRAWN_HORIZONS) == 8, (
+        f"expected eight drawn horizons in {DRAWN_HORIZONS_FILE}, found {DRAWN_HORIZONS}"
+    )
+
+
+@pytest.mark.parametrize("horizon", DRAWN_HORIZONS)
+def test_a_drawn_horizon_is_refused(horizon):
+    """The same promise at values nobody could have listed: four integers drawn across 1..10000
+    other than 365, a negative, a fraction, an exponent form and a numeral of twenty to forty
+    digits, all drawn fresh by test.sh for this run and printed in its log. A program that
+    refuses the fixed values by name and answers the rest is caught here."""
+    _horizon_refused(horizon)
 
 
 def _reports_by(data_dir, version, source, days):

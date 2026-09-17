@@ -136,30 +136,75 @@ else
 fi
 rm -rf /app/build_iso
 
-# Closing the project and the system paths still leaves scratch space the build user can write
-# to and then execute from. Ada reaches libc through Interfaces.C, which is part of the standard
-# library, so a program could carry a helper as bytes, drop it in /tmp, mark it executable and
-# run it. The task says the numbers come out of the Ada, so every single invocation below -- the
-# two graded runs AND every argument-count and horizon probe, not only the two graded runs -- is
-# bracketed by the same pair of checks, scratch space and the collected directories alike (/app
-# itself included, not only its known subdirectories, so nothing dropped as a sibling of
-# forecast/, out/ or data/ escapes the sweep by sitting outside all three), and anything newly
-# executable throws that invocation's own output away. A probe used to be checked only for the
-# output path it named, which let something planted during a probe sit unnoticed until a LATER
-# snapshot's "before" picture, since that picture was only ever taken right before the two graded
-# runs; every invocation now takes and checks its own before/after pair, so nothing has anywhere
-# to hide between one call and the next.
-# The sweep turns on nothing but presence. A file's MODE is not the control here: the dynamic
-# loader is deliberately left executable (see the TOOLS comment above), and it will map and run a
-# helper the kernel would refuse to execve directly, so an execute bit says nothing about whether
-# a leftover file could have done work. Every non-directory entry anywhere the run could write is
-# listed instead, scratch space, the runner's home and the whole of /app alike (/app itself
-# included, not only its known subdirectories, so nothing dropped as a sibling of forecast/, out/
-# or data/ escapes by sitting outside all three), and anything new other than the one output file
-# the call was allowed throws that invocation's own output away.
-# A plain directory is not a file and is not listed, matching the instruction's own wording; a
-# probe's own staging directory is created before its bracket opens and removed only after it
-# closes, so it never looks new to this.
+# Nowhere to write. The contract says a run writes nothing but the JSON it was asked for and has
+# nowhere else to write, and that second half is what makes the first one checkable: a
+# before/after listing (kept below, as a belt) only sees what is still there when the run ends,
+# so a file created and deleted inside one invocation leaves it nothing to compare. Ada reaches
+# libc through Interfaces.C, which is part of the standard library, so a program could carry a
+# helper as bytes, drop it in scratch, mark it executable and run it, or spool through a
+# temporary file and unlink it. So the build is over, and from here on the build user has no
+# place to create anything: everything under /app is root-owned (the binary needs only its
+# execute bit, and the export was never meant to be written), the runner's home and every
+# scratch directory are root-only, and a walk of the whole file system AS THE BUILD USER has to
+# come back empty before anything below runs. Whatever it lists is closed and the walk repeated;
+# if something still answers writable the run is abandoned rather than graded on a promise the
+# box cannot keep. The one path a run may write is its own output file, which each invocation
+# pre-creates empty, owned by the build user, inside a root-owned directory: it can be written
+# over, and nothing can be created beside it, in its place or anywhere else.
+chown -R root:root /app /home/runner
+for d in /tmp /var/tmp /dev/shm /dev/mqueue /home/runner /run/lock; do
+  [ -d "$d" ] && chmod 700 "$d" 2>/dev/null
+done
+runner_writable() {
+  as_runner find / \( -path /proc -o -path /sys \) -prune -o \( -type d -o -type f \) -writable -print 2>/dev/null | sort
+}
+open=""
+for attempt in 1 2 3; do
+  open="$(runner_writable)"
+  [ -z "$open" ] && break
+  printf '%s\n' "$open" | while IFS= read -r p; do
+    [ -n "$p" ] && { chown root:root -- "$p"; chmod go-w -- "$p"; } 2>/dev/null
+  done
+done
+if [ -n "$open" ]; then
+  echo "FATAL: the build user can still write somewhere, so the run cannot be graded:"
+  printf '%s\n' "$open"
+  echo 0 > /logs/verifier/reward.txt
+  exit 0
+fi
+echo "nothing on the box is writable by the build user; each run gets its own output file and nothing else"
+
+# stage_output <path>: the one file an invocation may write, created empty for it and handed
+# over; its size and both timestamps are recorded, so "wrote nothing" below means exactly that
+# the file is as it was handed out, not merely that it is empty. output_touched <path> answers
+# wrote / nothing against that record.
+stage_output() {
+  : > "$1"
+  chown runner:runner "$1"
+  chmod 600 "$1"
+  stat -c '%s %y %z' "$1" > /opt/out_stat_before.txt
+}
+output_touched() {
+  if [ -f "$1" ] && [ ! -L "$1" ] \
+     && [ "$(stat -c '%s %y %z' "$1" 2>/dev/null)" = "$(cat /opt/out_stat_before.txt)" ]; then
+    echo nothing
+  else
+    echo wrote
+  fi
+}
+
+# The belt: every single invocation below -- the two graded runs AND every argument-count and
+# horizon probe -- is still bracketed by a before/after listing of every non-directory entry in
+# scratch space, the runner's home and the whole of /app (/app itself included, so nothing
+# dropped as a sibling of forecast/, out/ or data/ escapes by sitting outside all three), and
+# anything new other than the one output file the call was handed throws that invocation's own
+# output away and is deleted on the spot. With nowhere to write, nothing should ever be listed;
+# it stays because it costs nothing and reports loudly if the lockdown above ever regresses.
+# The listing turns on presence, not mode: the dynamic loader is deliberately left executable
+# (see the TOOLS comment above), and it maps and runs a helper the kernel would refuse to
+# execve, so an execute bit says nothing about whether a leftover could have done work.
+# A plain directory is not a file and is not listed; a probe's own staging directory is created
+# before its bracket opens and removed only after it closes, so it never looks new to this.
 all_list() {
   find /tmp /var/tmp /dev/shm /home/runner /app -xdev -mindepth 1 ! -type d 2>/dev/null | sort -u
 }
@@ -211,12 +256,13 @@ lock_project() {
 # as the agent's figures.
 run_once() {
   local data="$1" asked="$2" out="$3" pid violation
-  rm -f "$asked"
   # Closing the system paths stops the binary shelling out to a python or an awk, but the project
   # directory is the agent's own and is collected as an artifact, so a helper shipped inside it
   # would still be there to read. lock_project is what closes it, and the probes below run under
-  # exactly the same call.
+  # exactly the same call. The output file is handed out after it, so the lockdown's own chmod
+  # never touches the record stage_output keeps.
   lock_project "$data"
+  stage_output "$asked"
   snapshot_before
   close_tools
   # A root shell sets the working directory the instruction documents and the runner's HOME, then
@@ -240,6 +286,9 @@ run_once() {
   if [ -L "$asked" ] || [ ! -f "$asked" ]; then
     echo "no regular file was produced at $asked for $data (absent, or not a regular file)"
     rm -f "$asked"
+  elif [ "$(output_touched "$asked")" = nothing ]; then
+    echo "the output file handed to the run for $data was never written"
+    rm -f "$asked"
   else
     mv "$asked" "$out"
     chown root:root "$out" 2>/dev/null || true
@@ -248,12 +297,12 @@ run_once() {
 }
 
 # The instruction says what the program does when it is handed anything other than two
-# arguments: a line on standard error, nothing on standard output, exit 2, no output file
-# created. Every count from zero through forty is probed below, forty cases rather than a
-# handful, so a program that refuses a few counts and answers another normally is caught. The
-# check is only of the output path the call actually names (the second argument, when there is
-# one, exactly as the graded runs use it): a run of zero or one arguments names no output path
-# at all, so there is nothing to check there beyond exit status and stderr -- and the same
+# arguments: a line on standard error, nothing on standard output, exit 2, nothing written.
+# Every count from zero through forty is probed below, forty cases rather than a handful, so a
+# program that refuses a few counts and answers another normally is caught. The check is only of
+# the output path the call actually names (the second argument, when there is one, handed over
+# exactly as the graded runs get it): a run of zero or one arguments names no output path at
+# all, so there is nothing to check there beyond exit status and stderr -- and the same
 # leftover-file bracket every graded run gets (see check_after above).
 probe_args() {
   local tag="$1"; shift
@@ -262,13 +311,13 @@ probe_args() {
   # ever cleaned up here, never chosen here, so a probe's basename is decided the same way a
   # graded run's is and this function cannot itself reintroduce a fixed one.
   local outpath="${2:-}" violation datadir="${1:-}"
-  [ -n "$outpath" ] && rm -f "$outpath"
   # The project-tree lockdown is not a privilege of the graded runs. A probe is an invocation of
   # the same binary and runs under the same closed project: it used to be bracketed by the
   # before/after sweep but to reach an open /app/forecast, which made the first probe a window in
   # which the build script and everything else collected with it could still be read and its
   # contents staged somewhere for a later run to pick up.
   if [ -n "$datadir" ] && [ -d "$datadir" ]; then lock_project "$datadir"; else lock_project; fi
+  [ -n "$outpath" ] && stage_output "$outpath"
   snapshot_before
   close_tools
   # Same launch chain as run_once: a root shell sets cwd and HOME, then execs setpriv, whose own
@@ -288,8 +337,8 @@ probe_args() {
   echo "$pstatus" > "/opt/argprobe_${tag}_status.txt"
   violation="$(check_after "$outpath")"
   printf '%s' "$violation" > "/opt/argprobe_${tag}_violation.txt"
-  if [ -n "$outpath" ] && { [ -e "$outpath" ] || [ -L "$outpath" ]; }; then
-    echo wrote > "/opt/argprobe_${tag}_wrote.txt"
+  if [ -n "$outpath" ]; then
+    output_touched "$outpath" > "/opt/argprobe_${tag}_wrote.txt"
   else
     echo nothing > "/opt/argprobe_${tag}_wrote.txt"
   fi
@@ -314,10 +363,15 @@ for n in $(seq 0 40); do
 done
 
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
-# so without cases of its own nothing would stop a program that never reads the key. The seven
-# values below sample the promise: close to 365, far from it and one too long for any integer
-# type. Staging a whole export for a horizon costs a copy of the report log, so this list is a
-# sample rather than the exhaustive range the argument counts above get.
+# so without cases of its own nothing would stop a program that never reads the key. Eleven fixed
+# values sample the promise: close to 365, far from it, one too long for any integer type, and
+# four JSON numbers that begin with the digits 365 and are not the integer 365 (365.0, 365e0,
+# 3.65e2, 3650e-1), which a parser that stops at the first non-digit reads as 365. Then eight more
+# are drawn fresh on every run from /dev/urandom and printed below, so the set a program would
+# have to know is not a set at all: integers across 1..10000 other than 365, a negative, a
+# fraction, an exponent form and a numeral of twenty to forty digits. Staging a whole export for
+# a horizon costs a copy of the report log, so this stays a sample rather than the exhaustive
+# range the argument counts above get.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
@@ -339,11 +393,31 @@ run_horizon_probe() {
   probe_args "horizon_${value}" "$dir" "/app/out/$(rand_name)"
   rm -rf "$dir"
 }
-# The last value is a twenty-digit numeral: another horizon, and one no 32-bit integer holds, so
-# a program that converts the figure before comparing it has to refuse it rather than die on it.
-for h in 30 90 364 366 400 1000 99999999999999999999; do
+# The twenty-digit numeral is another horizon, and one no 32-bit integer holds, so a program that
+# converts the figure before comparing it has to refuse it rather than die on it.
+for h in 30 90 364 366 400 1000 99999999999999999999 365.0 365e0 3.65e2 3650e-1; do
   run_horizon_probe "$h"
 done
+# The drawn set. pytest reads /opt/horizon_random.txt to know what to look for and fails if it
+# does not hold eight values, so a run that skipped these cannot pass by their absence.
+rnd() { od -An -tu4 -N4 /dev/urandom | tr -d ' \n'; }
+drawn=()
+for i in 1 2 3 4; do
+  v=$(( $(rnd) % 10000 + 1 )); [ "$v" -eq 365 ] && v=$(( v + 1 + $(rnd) % 100 ))
+  drawn+=("$v")
+done
+drawn+=("-$(( $(rnd) % 10000 + 1 ))")
+drawn+=("$(( $(rnd) % 1000 )).$(( $(rnd) % 90 + 10 ))")
+drawn+=("$(( $(rnd) % 999 + 1 ))e$(( $(rnd) % 4 ))")
+big="$(( $(rnd) % 9 + 1 ))$(od -An -tu1 -N$(( 19 + $(rnd) % 20 )) /dev/urandom | tr -d ' \n' | tr -d -c '0-9' | cut -c1-39)"
+drawn+=("$big")
+: > /opt/horizon_random.txt
+echo "horizons drawn for this run: ${drawn[*]}"
+for h in "${drawn[@]}"; do
+  echo "$h" >> /opt/horizon_random.txt
+  run_horizon_probe "$h"
+done
+chmod 600 /opt/horizon_random.txt
 
 chown root:root /opt/argprobe_*.txt 2>/dev/null || true
 chmod 600 /opt/argprobe_*.txt 2>/dev/null || true

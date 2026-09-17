@@ -211,13 +211,27 @@ procedure Forecast is
          loop
             P := P + 1;
          end loop;
+         --  The whole number token, not a digit prefix: 365.0, 365e0 and 3.65e2 all start
+         --  with 365 and none is the integer 365. Only the bare token "365", followed by the
+         --  comma or brace that ends a JSON value, is the horizon; anything else is refused
+         --  without being converted, so a twenty-digit numeral cannot overflow anything.
          Q := P;
-         while Q <= S'Last and then S (Q) in '0' .. '9' loop
+         while Q <= S'Last
+           and then (S (Q) in '0' .. '9' or else S (Q) = '-' or else S (Q) = '+'
+                     or else S (Q) = '.' or else S (Q) = 'e' or else S (Q) = 'E')
+         loop
             Q := Q + 1;
          end loop;
-         --  A run of more than nine digits can neither be 365 nor fit a 32-bit Integer, so it
-         --  is refused as another horizon before Integer'Value could raise Constraint_Error.
-         if Q = P or else Q - P > 9 or else Integer'Value (S (P .. Q - 1)) /= Horizon then
+         if S (P .. Q - 1) /= "365" then
+            raise Wrong_Horizon;
+         end if;
+         while Q <= S'Last
+           and then (S (Q) = ' ' or else S (Q) = ASCII.HT
+                     or else S (Q) = ASCII.LF or else S (Q) = ASCII.CR)
+         loop
+            Q := Q + 1;
+         end loop;
+         if Q > S'Last or else (S (Q) /= ',' and then S (Q) /= '}') then
             raise Wrong_Horizon;
          end if;
 
