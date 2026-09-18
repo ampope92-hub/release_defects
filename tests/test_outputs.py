@@ -10,6 +10,7 @@ Every bar here is stated in instruction.md, and the same bars apply to both runs
 """
 import csv
 import datetime
+import decimal
 import hashlib
 import json
 import os
@@ -28,7 +29,7 @@ SHIPPED_SHA = {
     "releases.csv": "e45226fc2ad46aeb1be626637ffa752bafa573279acd5b39d9ea8049cf03e8f2",
     "reports.csv": "9e13926a0a037a96587bad18de24302144d4daa7478797402bd90fa63b7e36ad",
     "policy.json": "839c27cfc21e2e071d5713d5c0f30ba31150894f1137d31e2e34e1a29be3d6bb",
-    "README.md": "8d95887488b8708c19e1b816d59148b4add98399e8243052eef4cef9b90908a5",
+    "README.md": "12fc503e9eb7bab30bde5dfdbeed2af20121e48c1a105dc3f594910ca21948c5",
 }
 
 RUNS = [
@@ -162,9 +163,8 @@ def _probe(tag):
     else to check there. The build user has nowhere else to create anything, so the
     before/after listing is a belt, and "violation" should always be empty.
 
-    Every capture and every record of what test.sh drew for this run is created root-only
-    (umask 077, and /opt/draws is a closed directory), so the binary, running as the build user
-    between two probes, can never read what has been drawn or recorded so far."""
+    Every capture is created root-only (umask 077), so the binary, running as the build user
+    between two probes, can never read what has been recorded so far."""
     read = lambda part: pathlib.Path(f"/opt/argprobe_{tag}_{part}.txt").read_text()
     return (
         int(read("status").strip()), read("wrote").strip(), read("out"), read("err"),
@@ -172,26 +172,14 @@ def _probe(tag):
     )
 
 
-DRAWN_ARITY_FILE = pathlib.Path("/opt/draws/arity.txt")
-DRAWN_ARITY = DRAWN_ARITY_FILE.read_text().strip() if DRAWN_ARITY_FILE.exists() else ""
-
-
-def test_an_argument_count_was_drawn():
-    """test.sh draws one more argument count, from 41 to 5000, on every run and records it; the
-    drawn case below is only as good as that record, so its absence fails here rather than
-    passing by having nothing to check."""
-    assert DRAWN_ARITY.isdigit() and 41 <= int(DRAWN_ARITY) <= 5000, (
-        f"expected a drawn argument count in {DRAWN_ARITY_FILE}, found {DRAWN_ARITY!r}"
-    )
-
-
-@pytest.mark.parametrize("arity", [n for n in range(41) if n != 2] + ["drawn"])
+@pytest.mark.parametrize("arity", [n for n in range(41) if n != 2] + [2000])
 def test_wrong_argument_count_is_refused(arity):
     """Every wrong argument count gets something on stderr, an empty stdout, exit 2 and nothing
     written. The instruction promises this for any count other than two; test.sh probes
     every count from zero through forty before the graded runs, forty cases rather than a
-    handful, and one more drawn from 41..5000 on every run, so a program that answers one of
-    them normally, or that stops refusing past a cutoff, is caught.
+    handful, and two thousand, so a program that answers one of them normally, or that stops
+    refusing past a buffer's worth of arguments, is caught. The list is fixed, so a run and a
+    re-run grade the same cases.
 
     The instruction only says a line is printed on stderr; it does not fix the wording, so the
     check here is the part that is actually stated: something reaches stderr and it is a line,
@@ -217,11 +205,6 @@ def test_wrong_argument_count_is_refused(arity):
 FIXED_HORIZONS = [(str(v), str(v)) for v in (0, 30, 90, 364, 366, 400, 1000, 99999999999999999999)]
 FIXED_HORIZONS += [(v, v) for v in ("365.0", "365e0", "3.65e2", "3650e-1")]
 FIXED_HORIZONS += [("str365", '"365"'), ("true", "true"), ("null", "null"), ("list365", "[365]"), ("obj365", '{"v":365}')]
-DRAWN_HORIZONS_FILE = pathlib.Path("/opt/draws/horizons.txt")
-DRAWN_HORIZONS = (
-    [ln.strip() for ln in DRAWN_HORIZONS_FILE.read_text().splitlines() if ln.strip()]
-    if DRAWN_HORIZONS_FILE.exists() else []
-)
 
 
 def _horizon_refused(tag, value):
@@ -238,8 +221,9 @@ def _horizon_refused(tag, value):
 def test_another_horizon_is_refused(tag, value):
     """Handed a policy whose horizon_days is anything but the bare token 365 the program says so
     on stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
-    could go unread. The rule is universal and cannot be run to exhaustion, so it is sampled,
-    and the instruction says so. Seventeen fixed values: zero, which a parser that reads it as
+    could go unread. The rule is universal and cannot be run to exhaustion, so it is tried on a
+    fixed list of every kind, the same on every run, and the instruction says so. Seventeen
+    values: zero, which a parser that reads it as
     "not set" and falls back to 365 answers instead of refusing; two close to 365, two far from
     it, two round figures, a twenty-digit numeral no 32-bit integer holds (a program that
     converts first and compares after has to refuse it rather than die on the conversion), four
@@ -251,24 +235,6 @@ def test_another_horizon_is_refused(tag, value):
     what the instruction states is checked: stdout is not, since the contract says nothing
     about it on this path."""
     _horizon_refused(tag, value)
-
-
-def test_eight_horizons_were_drawn():
-    """test.sh draws eight more horizons from /dev/urandom on every run and records them; the
-    drawn cases below are only as good as that record, so its absence or a short list fails
-    here rather than passing by having nothing to check."""
-    assert len(DRAWN_HORIZONS) == 8, (
-        f"expected eight drawn horizons in {DRAWN_HORIZONS_FILE}, found {DRAWN_HORIZONS}"
-    )
-
-
-@pytest.mark.parametrize("horizon", DRAWN_HORIZONS)
-def test_a_drawn_horizon_is_refused(horizon):
-    """The same promise at values nobody could have listed: four integers drawn across 1..10000
-    other than 365, a negative, a fraction, an exponent form and a numeral of twenty to forty
-    digits, all drawn fresh by test.sh for this run and printed in its log. A program that
-    refuses the fixed values by name and answers the rest is caught here."""
-    _horizon_refused(horizon, horizon)
 
 
 def _reports_by(data_dir, version, source, days):
@@ -383,6 +349,63 @@ def test_total_within_tolerance(run_path, key_path, data_dir):
     err = abs(got - want) / want
     assert err <= tol, (
         f"{run_path.name}: forecasts total {got} against {want} reached, {err:.1%} off, more than the {tol:.0%} allowed"
+    )
+
+
+def _load_as_printed(path):
+    """The same document, with every number kept as the text the run printed (a Decimal), so a
+    share's printed precision is known: 0.10 is exact to a hundredth, 0.1004 to a ten-thousandth."""
+    with _open(path) as fh:
+        text = fh.read()
+    return json.loads(text, parse_float=decimal.Decimal, parse_int=decimal.Decimal)
+
+
+@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
+def test_forecast_is_the_count_over_the_printed_share(run_path, key_path, data_dir):
+    """The printed curve is the curve the forecasts rest on, and the instruction says both halves
+    of that. A release past day 365 has its count in the file and the forecast must be exactly
+    that count, read here off the export's own reports. A younger release's forecast must be its
+    open reports by its last complete age (30 times floor(A/30)), one source at a time, divided
+    by the share the report itself prints at that age, the two added and rounded to the nearest
+    whole number. Each printed share is taken as exact only to its last printed digit: 0.10
+    stands for any divisor from 0.095 to 0.105, so the recomputed forecast is a range, not a
+    point, and the printed forecast has to round into it. A curve printed to two decimals passes
+    as readily as one printed to ten; what cannot pass is a curve that is not the one the
+    forecasts were divided by, or a finished release discounted from its own record."""
+    r = _load_as_printed(run_path)
+    a, fc = r["arrival_share"], r["reports_by_day_365"]
+    rel, _ = _rows(data_dir)
+    export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
+    misses = []
+    for v in _policy(data_dir)["forecast_releases"]:
+        age = (export - datetime.date.fromisoformat(rel[v]["release_date"])).days
+        got = float(fc[v])
+        if age >= HORIZON:
+            count = sum(_reports_by(data_dir, v, src, HORIZON) for src in ("ticket", "crash"))
+            if got != count:
+                misses.append(f"{v} is {age} days old and holds {count} open reports by day 365, but is forecast {fc[v]}")
+            continue
+        k = age // STEP
+        age_key = str(STEP * k)
+        low, high = 0.0, 0.0
+        for src in ("ticket", "crash"):
+            n = _reports_by(data_dir, v, src, STEP * k)
+            if n == 0:
+                continue
+            share = a[src][age_key]
+            # Half a unit in the last printed place: the widest the divisor could have been and
+            # still have printed as this figure.
+            half = decimal.Decimal(1).scaleb(share.as_tuple().exponent) / 2
+            lo, hi = float(share - half), min(float(share + half), 1.0)
+            low += n / hi if hi > 0 else float("inf")
+            high += n / lo if lo > 0 else float("inf")
+        if not (low - 0.5 - 1e-6 <= got <= high + 0.5 + 1e-6):
+            misses.append(
+                f"{v} forecasts {fc[v]}, but its reports by day {age_key} over the printed shares at "
+                f"{age_key} days, each read to its last printed digit, come to between {low:.1f} and {high:.1f}"
+            )
+    assert not misses, (
+        f"{run_path.name}: the printed curve is not the one the forecasts rest on: " + "; ".join(misses)
     )
 
 

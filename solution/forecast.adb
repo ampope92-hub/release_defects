@@ -43,7 +43,7 @@ procedure Forecast is
 
    type Source is (Ticket, Crash);
    type Column_Row is array (0 .. Columns - 1) of Long_Float;
-   type Count_Row  is array (0 .. Columns - 1) of Natural;
+   type Count_Row  is array (0 .. Columns - 1) of Long_Long_Integer;
    type Source_Counts is array (Source) of Count_Row;
 
    type Release is record
@@ -172,6 +172,54 @@ procedure Forecast is
       return 30 * (P + 1);
    end Column_Limit;
 
+   --  Index just past the colon of the top-level member Name of the JSON object in S, or 0.
+   --  The text is walked as JSON rather than searched: a string value that happens to read
+   --  "horizon_days", or a member nested inside another value, is passed over.
+   function Member (S : String; Name : String) return Natural is
+      Depth    : Integer := 0;
+      I        : Natural := S'First;
+      Key      : Natural := 0;       --  the last key read at depth 1, S (Key .. Key_End)
+      Key_End  : Natural := 0;
+      Want_Key : Boolean := False;   --  at depth 1, the next string is a key
+   begin
+      while I <= S'Last loop
+         case S (I) is
+            when '"' =>
+               declare
+                  J : Natural := I + 1;
+               begin
+                  while J <= S'Last and then S (J) /= '"' loop
+                     if S (J) = '\' then
+                        J := J + 1;
+                     end if;
+                     J := J + 1;
+                  end loop;
+                  if Depth = 1 and then Want_Key then
+                     Key := I + 1;
+                     Key_End := J - 1;
+                     Want_Key := False;
+                  end if;
+                  I := J;
+               end;
+            when '{' | '[' =>
+               Depth := Depth + 1;
+               Want_Key := Depth = 1;
+            when '}' | ']' =>
+               Depth := Depth - 1;
+            when ',' =>
+               Want_Key := Depth = 1;
+            when ':' =>
+               if Depth = 1 and then Key > 0 and then S (Key .. Key_End) = Name then
+                  return I + 1;
+               end if;
+            when others =>
+               null;
+         end case;
+         I := I + 1;
+      end loop;
+      return 0;
+   end Member;
+
    procedure Read_Policy (Path : String) is
       F    : File_Type;
       Text : Unbounded_String;
@@ -190,11 +238,10 @@ procedure Forecast is
          --  The horizon the whole report is shaped around is checked before anything else
          --  is read out of the file: a policy that asks for another day gets the exit
          --  status the task documents, whatever else it holds.
-         P := Index (S, """horizon_days""");
+         P := Member (S, "horizon_days");
          if P = 0 then
             raise Program_Error with "policy.json has no horizon_days";
          end if;
-         P := Index (S, ":", P) + 1;
          --  JSON whitespace is any of four bytes, not only a space: a tab between the colon
          --  and the value is as legal as a space and must not read as a missing number.
          while P <= S'Last
@@ -227,16 +274,15 @@ procedure Forecast is
             raise Wrong_Horizon;
          end if;
 
-         P := Index (S, """export_date""");
+         P := Member (S, "export_date");
          if P = 0 then
             raise Program_Error with "policy.json has no export_date";
          end if;
-         P := Index (S, ":", P);
          P := Index (S, """", P);
          Q := Index (S, """", P + 1);
          Export_Day := Parse_Date (S (P + 1 .. Q - 1));
 
-         P := Index (S, """forecast_releases""");
+         P := Member (S, "forecast_releases");
          if P = 0 then
             raise Program_Error with "policy.json has no forecast_releases";
          end if;
@@ -378,8 +424,9 @@ procedure Forecast is
 
    --  A release's day-365 figure for one source, the README's method rule for rule: a finished
    --  release has its whole record, so its day-365 count is the figure; otherwise its reports by
-   --  its last complete age over the curve's share at that age; with no complete age (under 30
-   --  days old), or a share of zero there, its count stands as it is.
+   --  its last complete age over the curve's share at that age. The two guards never fire on an
+   --  export that keeps the README's facts (every forecast release is at least 60 days old and
+   --  every share it divides by is positive); they keep a division by zero out of one that does not.
    function Ultimate (I : Positive; Src : Source; Share : Column_Row) return Long_Float is
       K : constant Integer := Rel (I).Complete - 1;   --  last complete column
    begin
@@ -427,7 +474,7 @@ begin
       declare
          I     : constant Natural := Find_Release (To_String (Forecast_Versions (J)));
          Total : Long_Float := 0.0;
-         N     : Natural;
+         N     : Long_Long_Integer;
       begin
          if I = 0 then
             raise Program_Error with "forecast release missing from releases.csv: " & To_String (Forecast_Versions (J));
@@ -438,11 +485,11 @@ begin
          --  says. A release with no crash reports contributes a zero here, so this is a no-op for
          --  the ordinary ticket-only release.
          Total := Ultimate (I, Ticket, Ticket_Share) + Ultimate (I, Crash, Crash_Share);
-         N := Natural (Long_Float'Rounding (Total));
+         N := Long_Long_Integer (Long_Float'Rounding (Total));
          if J > 1 then
             Put (Result, ",");
          end if;
-         Put (Result, """" & To_String (Forecast_Versions (J)) & """:" & Trim (Natural'Image (N), Ada.Strings.Left));
+         Put (Result, """" & To_String (Forecast_Versions (J)) & """:" & Trim (Long_Long_Integer'Image (N), Ada.Strings.Left));
       end;
    end loop;
    Put (Result, "},""arrival_share"":{""ticket"":{");

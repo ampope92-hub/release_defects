@@ -113,8 +113,9 @@ def chain_ladder(tri):
 def by_arrival_share(tri):
     """What forecast.adb does, the README's method: pool the finished releases into one curve
     per column and divide a young release's last complete count by the share there. A finished
-    release's forecast is its day-365 count as it stands in the file; a release with no complete
-    column, or a share of zero at its column, keeps its count as it stands."""
+    release's forecast is its day-365 count as it stands in the file. The two guards below never
+    fire on the pinned exports (every forecast release is at least 60 days old, every share it
+    divides by positive); they keep a division by zero out of a seed that breaks either."""
     finished = [row for row in tri.values() if len(row) == COLUMNS]
     ult = sum(row[-1] for row in finished)
     share = [sum(row[p] for row in finished) / ult if ult else 1.0 for p in range(COLUMNS)]

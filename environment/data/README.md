@@ -41,18 +41,18 @@ A report counts only while its `status` is `open`. Its age is the days from the 
 `release_date` to its `opened_date`, and it is opened by day N when that age is at most N, the
 day itself included. The day-365 count is the reports opened by day 365.
 
-The finished releases are those at least 365 days old on the export date. The ticket curve is
-one pile of every finished release's open tickets opened by day 365; its share at age N (30, 60
-and so on to 360) is the part of that pile opened by day N. The crash curve is the same over the
-crash reports of the finished releases whose `crash_reporter` column says `yes`. If no finished
-release supplies a source, every point of that source's curve is 1.
+The finished releases are those at least 365 days old on the export date; this export has
+finished releases both with and without the reporter. The ticket curve is one pile of every
+finished release's open tickets opened by day 365; its share at age N (30, 60 and so on to 360)
+is the part of that pile opened by day N. The crash curve is the same over the crash reports of
+the finished releases whose `crash_reporter` column says `yes`.
 
-A release at least 365 days old has its whole record, so its forecast is its day-365 count, both
-sources together. For a younger release A days old, the last complete age is N = 30 times
-floor(A/30), capped at 360. For each source, take the release's open reports opened by day N and
-divide by that source's share at age N; add the two figures and round to the nearest whole
-number. A release under 30 days old has no complete age, and a share of 0 cannot be divided by:
-in either case that source's count stands as it is.
+Every release on the forecast list ships the reporter and is either at least 365 days old or
+between 60 and 210 days old. A release at least 365 days old has its whole record, so its
+forecast is its day-365 count, both sources together. For a younger release A days old, the last
+complete age is N = 30 times floor(A/30). For each source, take the release's open reports opened
+by day N and divide by that source's share at age N, which is positive in this export; add the
+two figures and round to the nearest whole number.
 
 ## policy.json
 

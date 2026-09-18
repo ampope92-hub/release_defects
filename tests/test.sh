@@ -12,11 +12,10 @@ echo 0 > /logs/verifier/reward.txt
 exec 2>&1
 
 # Everything this script creates from here on is root-only from the moment it exists: the
-# probe captures, the record of the horizons and the argument count drawn for this run, the
-# staged copies of the exports. Nothing is written world-readable and closed afterwards, so
-# there is never a window in which the binary, running as the build user between two probes,
-# could read what the verifier has drawn or recorded so far. The few things the build user has
-# to reach (the staged export directories, the binary itself) are opened by name below.
+# probe captures and the staged copies of the exports. Nothing is written world-readable and
+# closed afterwards, so there is never a window in which the binary, running as the build user
+# between two probes, could read what the verifier has recorded so far. The few things the build
+# user has to reach (the staged export directories, the binary itself) are opened by name below.
 umask 077
 chmod 700 /opt 2>/dev/null || true
 
@@ -324,8 +323,8 @@ run_once() {
 # The instruction says what the program does when it is handed anything other than two
 # arguments: a line on standard error, nothing on standard output, exit 2, nothing written.
 # Every count from zero through forty is probed below, forty cases rather than a handful, and
-# one more drawn from 41..5000 on every run, so a program that refuses a few counts and answers
-# another normally, or stops refusing past the fixed loop, is caught. The check is only of
+# two thousand, so a program that refuses a few counts and answers another normally, or stops
+# refusing past a buffer's worth of arguments, is caught. The check is only of
 # the output path the call actually names (the second argument, when there is one, handed over
 # exactly as the graded runs get it): a run of zero or one arguments names no output path at
 # all, so there is nothing to check there beyond exit status and stderr -- and the same
@@ -375,21 +374,13 @@ probe_args() {
   echo "  $tag: exit $pstatus, $(cat "/opt/argprobe_${tag}_wrote.txt") written${violation:+, VIOLATION: $violation}"
 }
 
-# The records of what this run drew, root-only from the moment they exist (umask above, and a
-# directory nobody else can enter); pytest reads them to know what to look for.
-install -d -m 700 /opt/draws
-rnd() { od -An -tu4 -N4 /dev/urandom | tr -d ' \n'; }
-
 echo "=== what it does when the argument count is wrong ==="
-# Every count from zero through forty, and then one more drawn from 41..5000 on every run and
-# printed, so the promise is sampled well past any cutoff a program could have read off the
-# fixed loop.
-drawn_arity=$(( $(rnd) % 4960 + 41 ))
-printf '%s\n' "$drawn_arity" > /opt/draws/arity.txt
-echo "argument count drawn for this run: $drawn_arity"
-for n in $(seq 0 40) "$drawn_arity"; do
+# Every count from zero through forty, and then two thousand, so the promise is tried well past
+# any argument buffer a program might size for. The list is fixed: the same probes on every run,
+# so a clean run and a re-run grade the same cases.
+for n in $(seq 0 40) 2000; do
   [ "$n" -eq 2 ] && continue
-  tag="argc_${n}"; [ "$n" -eq "$drawn_arity" ] && tag="argc_drawn"
+  tag="argc_${n}"
   case "$n" in
     0) probe_args "$tag" ;;
     1) probe_args "$tag" /app/data ;;
@@ -406,19 +397,17 @@ done
 # The horizon is the one policy figure the program is told to refuse. Both graded exports say 365,
 # so without cases of its own nothing would stop a program that never reads the key. The rule is
 # universal, anything but the integer 365, and a universal rule over every JSON value cannot be
-# run to exhaustion, so it is sampled, and the instruction says so: fixed values and values drawn
-# fresh on every run. Seventeen fixed: zero, which a parser that treats a missing or unset figure
-# as "use the default" answers instead of refusing, close to 365, far from it, one numeral too
-# long for any integer type, four JSON numbers that begin with the digits 365 and are not the
+# run to exhaustion, so it is tried on a fixed list of every kind, the same on every run, and the
+# instruction says so. Seventeen values: zero, which a parser that treats a missing or unset
+# figure as "use the default" answers instead of refusing, close to 365, far from it, one numeral
+# too long for any integer type, four JSON numbers that begin with the digits 365 and are not the
 # bare token 365 (365.0, 365e0, 3.65e2, 3650e-1), which a parser that stops at the first
 # non-digit reads as 365 and which the instruction names as another spelling and another horizon,
 # and five values of another JSON type that carry the same digits or no number at all (the string
 # "365", true, null, [365], {"v":365}), which a parser that coerces a string to an integer, or
-# skips to the first digits it can find, reads as 365. Then eight more are drawn from /dev/urandom
-# and printed below, so the set a program would have to know is not a set at all: integers across
-# 1..10000 other than 365, a negative, a fraction, an exponent form and a numeral of twenty to
-# forty digits. Staging a whole export for a horizon costs a copy of the report log, so this stays
-# a sample rather than the exhaustive range the argument counts above get.
+# skips to the first digits it can find, reads as 365. Staging a whole export for a horizon costs
+# a copy of the report log, so this stays a list rather than the exhaustive range the argument
+# counts above get.
 #
 # Staged under a name drawn from the same bare mktemp template as the other product's export
 # below, not a distinguishing prefix like "horizon_": a name that says what the directory is for
@@ -454,25 +443,6 @@ run_horizon_probe true true
 run_horizon_probe null null
 run_horizon_probe list365 '[365]'
 run_horizon_probe obj365 '{"v":365}'
-# The drawn set, recorded root-only as it is drawn (umask, and /opt/draws is closed). pytest reads
-# the record to know what to look for and fails if it does not hold eight values, so a run that
-# skipped these cannot pass by their absence.
-drawn=()
-for i in 1 2 3 4; do
-  v=$(( $(rnd) % 10000 + 1 )); [ "$v" -eq 365 ] && v=$(( v + 1 + $(rnd) % 100 ))
-  drawn+=("$v")
-done
-drawn+=("-$(( $(rnd) % 10000 + 1 ))")
-drawn+=("$(( $(rnd) % 1000 )).$(( $(rnd) % 90 + 10 ))")
-drawn+=("$(( $(rnd) % 999 + 1 ))e$(( $(rnd) % 4 ))")
-big="$(( $(rnd) % 9 + 1 ))$(od -An -tu1 -N$(( 19 + $(rnd) % 20 )) /dev/urandom | tr -d ' \n' | tr -d -c '0-9' | cut -c1-39)"
-drawn+=("$big")
-: > /opt/draws/horizons.txt
-echo "horizons drawn for this run: ${drawn[*]}"
-for h in "${drawn[@]}"; do
-  echo "$h" >> /opt/draws/horizons.txt
-  run_horizon_probe "$h" "$h"
-done
 
 chown root:root /opt/argprobe_*.txt 2>/dev/null || true
 chmod 600 /opt/argprobe_*.txt 2>/dev/null || true
