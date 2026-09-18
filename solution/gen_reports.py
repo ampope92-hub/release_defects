@@ -286,10 +286,14 @@ def main():
 
     to_forecast = [v for v, rd, _, _ in releases if 60 <= (export - rd).days <= 210]
     # The age-60 release sits on the floor of that range and is asked for on both products, so
-    # a forecast release always sits exactly on a column edge; the age-400 release is kept on
-    # the list though it is long past the horizon (see the special releases above).
+    # a forecast release always sits exactly on a column edge; the age-365 release is asked for
+    # on the inclusive edge of the finished rule, where a program that reads "at least 365 days
+    # old" as "more than" forecasts it off its day-360 column instead of its complete record;
+    # the age-400 release is kept on the list though it is long past the horizon (see the
+    # special releases above).
     if special_versions[60] not in to_forecast:
         to_forecast.append(special_versions[60])
+    to_forecast.append(special_versions[365])
     to_forecast.append(special_versions[400])
 
     # The shipped product's age-60 release carries a batch of crash reports, none of them inside

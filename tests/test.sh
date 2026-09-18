@@ -99,8 +99,8 @@ trap 'open_tools' EXIT
 # helper packages builds exactly as it would from the project directory itself, with the same
 # command build.sh documents. A helper written any other way (a native binary, a script, an
 # object file) is simply never copied in, so it cannot be linked into the program or reached by
-# its build: "the standard library and nothing else" is enforced by what the compiler is ever
-# given, not by scanning what the project happens to contain.
+# its build: what a submission can build against is decided by what the compiler is ever given,
+# not by scanning what the project happens to contain.
 rm -rf /app/forecast /app/build_iso
 cp -a /opt/forecast_pristine /app/forecast
 # Only Ada source ever survives under src/: an ordinary GNAT project built with the documented
@@ -398,9 +398,10 @@ done
 # so without cases of its own nothing would stop a program that never reads the key. The rule is
 # universal, anything but the integer 365, and a universal rule over every JSON value cannot be
 # run to exhaustion, so it is tried on a fixed list of every kind, the same on every run, and the
-# instruction says so. Seventeen values: zero, which a parser that treats a missing or unset
+# instruction says so. Eighteen values: zero, which a parser that treats a missing or unset
 # figure as "use the default" answers instead of refusing, close to 365, far from it, one numeral
-# too long for any integer type, four JSON numbers that begin with the digits 365 and are not the
+# too long for any integer type, minus 365, which a parser that takes the sign off and compares
+# the digits reads as the horizon it was built for, four JSON numbers that begin with the digits 365 and are not the
 # bare token 365 (365.0, 365e0, 3.65e2, 3650e-1), which a parser that stops at the first
 # non-digit reads as 365 and which the instruction names as another spelling and another horizon,
 # and five values of another JSON type that carry the same digits or no number at all (the string
@@ -438,6 +439,7 @@ run_horizon_probe() {
 for h in 0 30 90 364 366 400 1000 99999999999999999999 365.0 365e0 3.65e2 3650e-1; do
   run_horizon_probe "$h" "$h"
 done
+run_horizon_probe neg365 -365
 run_horizon_probe str365 '"365"'
 run_horizon_probe true true
 run_horizon_probe null null

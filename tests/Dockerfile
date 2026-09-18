@@ -12,11 +12,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gnat \
     && rm -rf /var/lib/apt/lists/*
 
-# The instruction says the tool is built against the Ada standard library and nothing else. GNAT
-# ships its own convenience packages, the GNAT.* hierarchy, in the same source path as Ada.*, so a
-# submission could `with GNAT.Regpat;` and still compile. Removing those sources makes the
-# constraint real: Ada.* still resolves, GNAT.* no longer does, and the compile fails rather than
-# the rule being taken on trust. The oracle_gnat_unit arm is that submission and it scores 0.
+# The instruction says the GNAT hierarchy is removed from the image. GNAT ships its own
+# convenience packages, the GNAT.* hierarchy, in the same source path as Ada.*, so a submission
+# could `with GNAT.Regpat;` and still compile if they were left there. Removing those sources
+# makes the stated fact real, in the same way the agent's own image does: Ada.* still resolves,
+# GNAT.* no longer does, and the compile fails. The oracle_gnat_unit arm is that submission and it
+# scores 0.
 RUN find / -name 'adainclude' -type d -prune -exec sh -c 'rm -f "$1"/g-*.ads "$1"/g-*.adb' _ {} \; \
     && find / -name 'adalib' -type d -prune -exec sh -c 'rm -f "$1"/g-*.ali' _ {} \;
 

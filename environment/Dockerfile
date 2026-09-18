@@ -14,10 +14,9 @@ RUN apt-get update \
         asciinema \
     && rm -rf /var/lib/apt/lists/*
 
-# The tool is built against the Ada standard library and nothing else, so GNAT's own convenience
-# hierarchy is not on the box to build against. Ada.* resolves as usual; GNAT.* does not, here and
-# in the image that recompiles the work, so the constraint shows up at the first build rather than
-# at grading time.
+# The instruction says the GNAT hierarchy is removed from the image, and it is: Ada.* resolves as
+# usual, GNAT.* does not, here and in the image that recompiles the work, so a submission that
+# reaches for a convenience package finds out at its own first build rather than at grading time.
 RUN find / -name 'adainclude' -type d -prune -exec sh -c 'rm -f "$1"/g-*.ads "$1"/g-*.adb' _ {} \; \
     && find / -name 'adalib' -type d -prune -exec sh -c 'rm -f "$1"/g-*.ali' _ {} \;
 

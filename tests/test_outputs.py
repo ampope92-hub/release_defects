@@ -28,8 +28,8 @@ HIDDEN_DATA = pathlib.Path("/opt/hidden/data")
 SHIPPED_SHA = {
     "releases.csv": "e45226fc2ad46aeb1be626637ffa752bafa573279acd5b39d9ea8049cf03e8f2",
     "reports.csv": "9e13926a0a037a96587bad18de24302144d4daa7478797402bd90fa63b7e36ad",
-    "policy.json": "839c27cfc21e2e071d5713d5c0f30ba31150894f1137d31e2e34e1a29be3d6bb",
-    "README.md": "12fc503e9eb7bab30bde5dfdbeed2af20121e48c1a105dc3f594910ca21948c5",
+    "policy.json": "d4a9342608824d585324dbbdc5b44a83f4beb7b7c9b3a062f98198af506f9713",
+    "README.md": "af54ded9a6cd8d24d735633fd8084b6a83eed47cabb3c3e2910fa833a558e28d",
 }
 
 RUNS = [
@@ -203,6 +203,7 @@ def test_wrong_argument_count_is_refused(arity):
 
 # (tag, the JSON text test.sh wrote after the colon); the tag names the capture files.
 FIXED_HORIZONS = [(str(v), str(v)) for v in (0, 30, 90, 364, 366, 400, 1000, 99999999999999999999)]
+FIXED_HORIZONS += [("neg365", "-365")]
 FIXED_HORIZONS += [(v, v) for v in ("365.0", "365e0", "3.65e2", "3650e-1")]
 FIXED_HORIZONS += [("str365", '"365"'), ("true", "true"), ("null", "null"), ("list365", "[365]"), ("obj365", '{"v":365}')]
 
@@ -222,8 +223,9 @@ def test_another_horizon_is_refused(tag, value):
     """Handed a policy whose horizon_days is anything but the bare token 365 the program says so
     on stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
     could go unread. The rule is universal and cannot be run to exhaustion, so it is tried on a
-    fixed list of every kind, the same on every run, and the instruction says so. Seventeen
-    values: zero, which a parser that reads it as
+    fixed list of every kind, the same on every run, and the instruction says so. Eighteen
+    values: minus 365, which a reader that takes an optional sign off and compares the digits after
+    it reads as the one horizon it answers; zero, which a parser that reads it as
     "not set" and falls back to 365 answers instead of refusing; two close to 365, two far from
     it, two round figures, a twenty-digit numeral no 32-bit integer holds (a program that
     converts first and compares after has to refuse it rather than die on the conversion), four
@@ -298,6 +300,52 @@ def test_a_release_sits_on_a_column_edge(run_path, key_path, data_dir):
         f"{data_dir}: the lower column is not separated from the right one on any forecast release; "
         f"the widest case is {best}, where reading floor((A-1)/30) lands {cases[best]:.1%} from the "
         f"count reached, inside the {tol:.0%} tolerance"
+    )
+
+
+@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
+def test_a_report_sits_on_the_complete_age_edge(run_path, key_path, data_dir):
+    """A second check on the fixture. The README reads a report as opened by day N when its age
+    is at most N, the day itself included, and that reading governs a young release's own
+    numerator as much as it governs the curve. It only bites where a requested young release
+    holds an open report opened on the very day its last complete age falls, so each export has
+    to carry one, and carry enough of them that dropping them moves the forecast by more than
+    the half report the printed-share check allows. On the shipped export that is 4.26, one
+    ticket opened on its hundred and fiftieth day against a printed ticket share of about 0.73,
+    a report and a third; on the other export it is 7.41, three tickets on its sixtieth day
+    against a share of about 0.29, ten reports. It fails loudly if a regeneration drops the
+    case."""
+    rel, reps = _rows(data_dir)
+    export = datetime.date.fromisoformat(_policy(data_dir)["export_date"])
+    want = {src: _true_share(data_dir, src) for src in ("ticket", "crash")}
+
+    cases = {}
+    for v in _policy(data_dir)["forecast_releases"]:
+        rd = datetime.date.fromisoformat(rel[v]["release_date"])
+        age = (export - rd).days
+        if age >= HORIZON:
+            continue
+        n_days = STEP * (age // STEP)
+        moved = 0.0
+        for src in ("ticket", "crash"):
+            on_the_day = sum(
+                1 for r in reps
+                if r["version"] == v and r["source"] == src and r["status"] == "open"
+                and (datetime.date.fromisoformat(r["opened_date"]) - rd).days == n_days
+            )
+            share = want[src][str(n_days)] if want[src] else 0.0
+            if on_the_day and share > 0:
+                moved += on_the_day / share
+        if moved:
+            cases[f"{v} at {age} days, reading day {n_days} as complete"] = moved
+    assert cases, (
+        f"{data_dir}: no requested young release holds an open report opened exactly on its last "
+        f"complete age, so reading that day as inside or outside the count gives the same forecast"
+    )
+    best = max(cases, key=cases.get)
+    assert cases[best] > 1.0, (
+        f"{data_dir}: dropping the reports opened on the day itself moves no forecast by as much "
+        f"as a report; the widest case is {best}, worth {cases[best]:.2f} reports"
     )
 
 

@@ -378,6 +378,13 @@ procedure Forecast is
    end Read_Reports;
 
 
+   --  A share carried at the four decimals the report prints, so the curve the forecasts
+   --  divide by and the curve on the page are the same numbers.
+   function Round4 (X : Long_Float) return Long_Float is
+   begin
+      return Long_Float'Rounding (X * 10000.0) / 10000.0;
+   end Round4;
+
    --  The share of a release's eventual day-365 total that has arrived by each column
    --  boundary, pooled over the releases that have finished collecting.
    procedure Arrival (Src : Source; Reporter_Only : Boolean; Share : out Column_Row) is
@@ -406,7 +413,7 @@ procedure Forecast is
                Num := Num + Long_Float (Rel (I).Counts (Src) (P));
             end if;
          end loop;
-         Share (P) := Num / Ult;
+         Share (P) := Round4 (Num / Ult);
       end loop;
    end Arrival;
 

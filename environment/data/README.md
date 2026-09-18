@@ -61,7 +61,7 @@ two figures and round to the nearest whole number.
 | product | the product |
 | export_date | the day the export was taken; no report opened after it is in the file |
 | horizon_days | the horizon support plans against, 365 days after each release |
-| forecast_releases | the releases support wants a number for; a release stays on the list through the quarterly comparison, so one of them is already past its horizon |
+| forecast_releases | the releases support wants a number for; a release stays on the list through the quarterly comparison, so some of them are already at or past their horizon |
 | tolerance_per_release | how far a forecast may be from the count a release reaches |
 | tolerance_total | how far the summed forecasts may be from the summed counts |
 | reports_per_10k_installs_to_date | the table from the release review, see below |
