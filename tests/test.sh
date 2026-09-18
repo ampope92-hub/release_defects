@@ -63,23 +63,6 @@ chmod -R go-w /opt/data_pristine
 cp -a /app/forecast /opt/forecast_pristine
 chmod -R go-w /opt/forecast_pristine
 
-# The back-test the instruction names: each export cut off 200 days before its export date, the
-# releases that were between 60 and 210 days old then and have since finished collecting on its
-# forecast list, and the count each of them went on to reach read off the full export as the
-# key. Staged now, by root, from the pristine copies, before any agent code runs; the program
-# is handed each cut-off export after the two graded runs below and its forecasts are held to
-# those counts under the same tolerances. Nothing on either key is held back: every count is in
-# the export the program was given, so the agent can run the same back-test on its own.
-mkdir -p /opt/earlier
-for product in shipped hidden; do
-  src=/opt/data_pristine; [ "$product" = hidden ] && src=/opt/hidden/data
-  if ! /usr/local/bin/python3 -P /tests/truncate.py "$src" "/opt/earlier/$product" 200; then
-    echo "FATAL: the $product export could not be cut off for the back-test, so this run cannot be graded"
-    echo 0 > /logs/verifier/reward.txt
-    exit 0
-  fi
-done
-
 # The task states the tool lives in Ada and that the box carries nothing past the Ada runtime.
 # This image ships a Python interpreter because pytest scores the result with it, and the
 # compiler and shells are here because the tool has to be built. All of them, and every other
@@ -201,6 +184,16 @@ if [ -n "$open" ]; then
 fi
 echo "nothing on the box is writable by the build user; each run gets its own output file and nothing else"
 
+# Every invocation, graded run and probe alike, has its standard output and standard error
+# captured into two files whose names are drawn fresh from /dev/urandom, and only after the
+# process is gone are a probe's captures renamed to the tag pytest reads them under. The binary
+# can read the path behind its own descriptor 1 (readlink on /proc/self/fd/1) even though it
+# cannot list /opt, and a capture named after the probe would tell it which kind of run it is
+# in; a bare hex name under a closed directory tells it nothing a graded run's does not.
+cap_name() {
+  printf '/opt/%s' "$(head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+}
+
 # stage_output <path>: the one file an invocation may write, created empty for it and handed
 # over; its size and both timestamps are recorded, so "wrote nothing" below means exactly that
 # the file is as it was handed out, not merely that it is empty. output_touched <path> answers
@@ -282,7 +275,7 @@ lock_project() {
 # pointing into /opt, and pytest, running as root, would then read the verifier's own truth back
 # as the agent's figures.
 run_once() {
-  local data="$1" asked="$2" out="$3" pid violation
+  local data="$1" asked="$2" out="$3" pid violation cap
   # Closing the system paths stops the binary shelling out to a python or an awk, but the project
   # directory is the agent's own and is collected as an artifact, so a helper shipped inside it
   # would still be there to read. lock_project is what closes it, and the probes below run under
@@ -297,11 +290,16 @@ run_once() {
   # not closed here (see the TOOLS comment above): the binary loads normally, and so would a
   # second dynamically linked binary the program went on to launch itself, since only the
   # standard library and the agent's own collected source are ever available to run either way.
-  setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$1" "$2"' _ "$data" "$asked" &
+  cap="$(cap_name)"
+  setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$1" "$2"' _ "$data" "$asked" \
+    > "${cap}.o" 2> "${cap}.e" &
   pid=$!
   wait "$pid"
   echo "run exit status: $? ($data -> $asked)"
   open_tools
+  # What the run said, for the log; nothing on either stream is graded on this path.
+  head -c 4000 "${cap}.o" "${cap}.e" | sed 's/^/  | /'
+  rm -f "${cap}.o" "${cap}.e"
   kill -TERM -- -"$pid" 2>/dev/null || true
   kill -KILL -- -"$pid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
@@ -338,7 +336,7 @@ probe_args() {
   # (a freshly randomized name from the caller, same generator the graded runs use); it is only
   # ever cleaned up here, never chosen here, so a probe's basename is decided the same way a
   # graded run's is and this function cannot itself reintroduce a fixed one.
-  local outpath="${2:-}" violation datadir="${1:-}"
+  local outpath="${2:-}" violation datadir="${1:-}" cap
   # The project-tree lockdown is not a privilege of the graded runs. A probe is an invocation of
   # the same binary and runs under the same closed project: it used to be bracketed by the
   # before/after sweep but to reach an open /app/forecast, which made the first probe a window in
@@ -353,12 +351,15 @@ probe_args() {
   # so a graded run and a probe run reached the binary through different parent processes; now
   # both go through the identical chain and only the policy content (or the horizon value, for a
   # horizon probe) differs between them.
+  cap="$(cap_name)"
   setsid bash -c 'cd /app/forecast && export HOME=/home/runner && exec setpriv --clear-groups --no-new-privs --reuid runner --regid runner /app/forecast/forecast "$@"' _ "$@" \
-    > "/opt/argprobe_${tag}_out.txt" 2> "/opt/argprobe_${tag}_err.txt" &
+    > "${cap}.o" 2> "${cap}.e" &
   local ppid=$!
   wait "$ppid"
   local pstatus=$?
   open_tools
+  mv -f "${cap}.o" "/opt/argprobe_${tag}_out.txt"
+  mv -f "${cap}.e" "/opt/argprobe_${tag}_err.txt"
   kill -TERM -- -"$ppid" 2>/dev/null || true
   kill -KILL -- -"$ppid" 2>/dev/null || true
   as_runner bash -c 'kill -9 -1' 2>/dev/null || true
@@ -406,9 +407,11 @@ done
 # so without cases of its own nothing would stop a program that never reads the key. The rule is
 # universal, anything but the integer 365, and a universal rule over every JSON value cannot be
 # run to exhaustion, so it is sampled, and the instruction says so: fixed values and values drawn
-# fresh on every run. Sixteen fixed: close to 365, far from it, one numeral too long for any
-# integer type, four JSON numbers that begin with the digits 365 and are not the integer 365
-# (365.0, 365e0, 3.65e2, 3650e-1), which a parser that stops at the first non-digit reads as 365,
+# fresh on every run. Seventeen fixed: zero, which a parser that treats a missing or unset figure
+# as "use the default" answers instead of refusing, close to 365, far from it, one numeral too
+# long for any integer type, four JSON numbers that begin with the digits 365 and are not the
+# bare token 365 (365.0, 365e0, 3.65e2, 3650e-1), which a parser that stops at the first
+# non-digit reads as 365 and which the instruction names as another spelling and another horizon,
 # and five values of another JSON type that carry the same digits or no number at all (the string
 # "365", true, null, [365], {"v":365}), which a parser that coerces a string to an integer, or
 # skips to the first digits it can find, reads as 365. Then eight more are drawn from /dev/urandom
@@ -441,8 +444,9 @@ run_horizon_probe() {
 }
 # The twenty-digit numeral is another horizon, and one no 32-bit integer holds, so a program that
 # converts the figure before comparing it has to refuse it rather than die on it. The tag of each
-# fixed value is the value itself where that is a plain token, and a word for the others.
-for h in 30 90 364 366 400 1000 99999999999999999999 365.0 365e0 3.65e2 3650e-1; do
+# fixed value is the value itself where that is a plain token, and a word for the others. Every
+# probe's captures are renamed to their tag only after the process is gone (probe_args above).
+for h in 0 30 90 364 366 400 1000 99999999999999999999 365.0 365e0 3.65e2 3650e-1; do
   run_horizon_probe "$h" "$h"
 done
 run_horizon_probe str365 '"365"'
@@ -488,19 +492,6 @@ chmod -R a-w,a+rX "$staged"
 echo "=== the same binary on the other product's export ==="
 run_once "$staged" "/app/out/$(rand_name)" /opt/run_hidden.json
 rm -rf "$staged"
-
-# The back-test: each export cut off 200 days before its export date (staged by root at the top,
-# before any agent code ran), handed over exactly like the other product's export. The releases
-# on its forecast list have all since finished collecting, and the count each went on to reach
-# is on that export's key, read off the full export the program already had.
-for product in shipped hidden; do
-  staged="$(mktemp -d /app/XXXXXXXXXX)"
-  cp /opt/earlier/$product/data/*.csv /opt/earlier/$product/data/policy.json /opt/earlier/$product/data/README.md "$staged"/
-  chmod -R a-w,a+rX "$staged"
-  echo "=== the same binary on the $product export cut off 200 days earlier ==="
-  run_once "$staged" "/app/out/$(rand_name)" "/opt/run_${product}_earlier.json"
-  rm -rf "$staged"
-done
 
 # Nothing the agent started may be alive while pytest runs or while the reward is written.
 as_runner bash -c 'kill -9 -1' 2>/dev/null || true

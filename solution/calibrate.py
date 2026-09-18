@@ -10,12 +10,13 @@ against the counts those releases actually reached:
                          a year old, read off at the young releases and scaled by their installs
   chain_ladder_pooled    one column-to-column growth pattern from every report of every release,
                          applied to each young release's count so far
-  chain_ladder_by_source the reference: an arrival curve per source over the finished releases,
-                         tickets from every one of them and crash reports from the ones that ship
-                         the crash reporter, each share rounded to the four places the report
-                         prints, and a young release's count divided by the share at its last
-                         whole column. Duplicate and invalid reports are dropped first, and the
-                         column a report falls into is read off opened_date, not reported_date.
+  chain_ladder_by_source the reference, the README's method: an arrival curve per source over
+                         the finished releases, tickets from every one of them and crash reports
+                         from the ones that ship the crash reporter, and a young release's count
+                         divided by the share at its last whole column; a finished release's
+                         forecast is its day-365 count. Duplicate and invalid reports are dropped
+                         first, and the column a report falls into is read off opened_date, not
+                         reported_date.
   by_source_ignore_triage  the reference method with one fact missed: it reads reported_date, the
                          day the tracker logged a ticket, instead of opened_date, the day the user
                          actually hit it. Tickets sit in a triage queue between the two, short on
@@ -29,9 +30,7 @@ against the counts those releases actually reached:
 Columns are 30 days wide, a report is in the N-day column when it was opened by day N (the day
 itself included), and only complete columns are used, with a final column for everything by day
 365. Scores are the worst per-release error, the error on the total, and how many releases land
-inside the policy's tolerance. The back-test the verifier runs (each export cut off 200 days
-early, the releases young then held to what they reached) is scored the same way for the
-reference route, so the bars are known to clear it across seeds.
+inside the policy's tolerance.
 
     calibrate.py [--seeds N]
 """
@@ -112,21 +111,23 @@ def chain_ladder(tri):
 
 
 def by_arrival_share(tri):
-    """What forecast.adb does: pool the finished releases into one curve per column, round each
-    share to four places, and divide a young release's last complete count by the share there.
-    A release already past the horizon still forecasts off the twelfth (360-day) column, as
-    forecast.adb does; its day-365 count is in the file either way, so both readings land on
-    the truth."""
+    """What forecast.adb does, the README's method: pool the finished releases into one curve
+    per column and divide a young release's last complete count by the share there. A finished
+    release's forecast is its day-365 count as it stands in the file; a release with no complete
+    column, or a share of zero at its column, keeps its count as it stands."""
     finished = [row for row in tri.values() if len(row) == COLUMNS]
     ult = sum(row[-1] for row in finished)
-    share = [round(sum(row[p] for row in finished) / ult, 4) if ult else 1.0 for p in range(COLUMNS)]
+    share = [sum(row[p] for row in finished) / ult if ult else 1.0 for p in range(COLUMNS)]
     out = {}
     for v, row in tri.items():
+        if len(row) == COLUMNS:
+            out[v] = float(row[-1])
+            continue
         if not row:
             out[v] = 0.0
             continue
-        k = min(len(row) - 1, COLUMNS - 2)
-        out[v] = row[k] / share[k] if share[k] > 0 else 0.0
+        k = len(row) - 1
+        out[v] = row[k] / share[k] if share[k] > 0 else float(row[k])
     return out
 
 
@@ -178,7 +179,7 @@ def main():
     a = ap.parse_args()
     fmt = lambda v: f"{st.mean(v):.3f} [{min(v):.3f},{max(v):.3f}]"
     for label, extra in [("ledgerdesk, the shipped export", []), ("fieldbook-mobile, the other product", ["--hidden"])]:
-        res, back = {}, []
+        res = {}
         with tempfile.TemporaryDirectory() as tmp:
             for seed in range(a.seeds):
                 d = pathlib.Path(tmp) / f"s{seed}"
@@ -189,21 +190,10 @@ def main():
                 out, pol = routes(d / "data")
                 for name, f in out.items():
                     res.setdefault(name, []).append(score(f, key, pol))
-                # the verifier's back-test on this seed, when the cut-off export supports one
-                cut = subprocess.run([sys.executable, str(HERE.parent / "tests" / "truncate.py"), str(d / "data"), str(d / "earlier"), "200"],
-                                     capture_output=True, check=False)
-                if cut.returncode == 0:
-                    with open(d / "earlier" / "key.json") as fh:
-                        bkey = json.load(fh)
-                    bout, bpol = routes(d / "earlier" / "data")
-                    back.append(score(bout["chain_ladder_by_source"], bkey, bpol))
         print(f"== {label}, {a.seeds} seeds")
         for name, v in res.items():
             c = list(zip(*v))
             print(f"   {name:24s} worst release {fmt(c[0])}   total {fmt(c[1])}   inside {' '.join(f'{i}/{n}' for i, n in zip(c[2], c[3]))}   passes {sum(c[4])}/{len(c[4])}")
-        if back:
-            c = list(zip(*back))
-            print(f"   back-test, reference     worst release {fmt(c[0])}   total {fmt(c[1])}   passes {sum(c[4])}/{len(c[4])} of {len(back)} seeds with a back-test")
     print("== the pinned exports")
     for label, d, k in [("shipped", HERE.parent / "environment" / "data", HERE.parent / "tests" / "golden" / "key.json"),
                         ("hidden", HERE.parent / "tests" / "hidden" / "data", HERE.parent / "tests" / "hidden" / "key.json")]:

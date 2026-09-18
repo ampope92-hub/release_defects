@@ -21,7 +21,8 @@
 --  A release's age in days, and so which columns the export holds complete for it, is still a
 --  calendar fact and never moves: an X day old release has X+1 days of history, opened lags 0
 --  to X, so an N-day column is complete once N <= X and it holds floor(X/30) of them. An N-day
---  column counts a report opened by day N, lag 0 to N; the day-365 total counts lag 0 to 365.
+--  column counts a report opened by day N, lag 0 to N; the day-365 total counts lag 0 to 365,
+--  and a release 365 days old or more has that total in the file, so it is the forecast itself.
 --
 --  Usage: forecast <data-dir> <output-json>
 
@@ -149,9 +150,8 @@ procedure Forecast is
    --  Complete thirty-day columns available to divide a forecast by: floor(Age/30), the same
    --  rule at every age (a release's history runs to lag Age inclusive, the export date being
    --  in the file), capped at Columns - 1 because the curve only publishes points up to 360
-   --  days. This never special-cases Age >= Horizon: whether a release is old enough to feed
-   --  the curve and which column a forecast reads off it are two different facts, kept in two
-   --  different fields.
+   --  days. A finished release never divides at all (Ultimate below reads its day-365 count),
+   --  so the cap only matters between 360 and 364 days.
    function Complete_Columns (Age : Integer) return Natural is
       N : Integer := Age / 30;
    begin
@@ -187,18 +187,9 @@ procedure Forecast is
          P : Natural;
          Q : Natural;
       begin
-         P := Index (S, """export_date""");
-         if P = 0 then
-            raise Program_Error with "policy.json has no export_date";
-         end if;
-         P := Index (S, ":", P);
-         P := Index (S, """", P);
-         Q := Index (S, """", P + 1);
-         Export_Day := Parse_Date (S (P + 1 .. Q - 1));
-
-         --  The horizon the whole report is shaped around. Read it and refuse anything
-         --  else, rather than quietly returning a day-365 answer to a policy that asked
-         --  for another day.
+         --  The horizon the whole report is shaped around is checked before anything else
+         --  is read out of the file: a policy that asks for another day gets the exit
+         --  status the task documents, whatever else it holds.
          P := Index (S, """horizon_days""");
          if P = 0 then
             raise Program_Error with "policy.json has no horizon_days";
@@ -235,6 +226,15 @@ procedure Forecast is
          if Q > S'Last or else (S (Q) /= ',' and then S (Q) /= '}') then
             raise Wrong_Horizon;
          end if;
+
+         P := Index (S, """export_date""");
+         if P = 0 then
+            raise Program_Error with "policy.json has no export_date";
+         end if;
+         P := Index (S, ":", P);
+         P := Index (S, """", P);
+         Q := Index (S, """", P + 1);
+         Export_Day := Parse_Date (S (P + 1 .. Q - 1));
 
          P := Index (S, """forecast_releases""");
          if P = 0 then
@@ -376,27 +376,23 @@ procedure Forecast is
       return Trim (Integer'Image (W), Ada.Strings.Left) & "." & FS;
    end Fmt;
 
-   --  A share rounded to the four places the report prints, so the figure a forecast divides by
-   --  is exactly the figure written under arrival_share, not a longer version of it.
-   function Rounded (X : Long_Float) return Long_Float is
-   begin
-      return Long_Float (Integer (Long_Float'Rounding (X * 10000.0))) / 10000.0;
-   end Rounded;
-
-   --  A release's day-365 figure for one source: its reports over its last whole thirty-day
-   --  column, divided by the curve's share at that column.
+   --  A release's day-365 figure for one source, the README's method rule for rule: a finished
+   --  release has its whole record, so its day-365 count is the figure; otherwise its reports by
+   --  its last complete age over the curve's share at that age; with no complete age (under 30
+   --  days old), or a share of zero there, its count stands as it is.
    function Ultimate (I : Positive; Src : Source; Share : Column_Row) return Long_Float is
       K : constant Integer := Rel (I).Complete - 1;   --  last complete column
-      S : Long_Float;
    begin
+      if Rel (I).Finished then
+         return Long_Float (Rel (I).Counts (Src) (Columns - 1));
+      end if;
       if K < 0 then
-         return 0.0;
+         return Long_Float (Rel (I).Counts (Src) (0));
       end if;
-      S := Rounded (Share (K));
-      if S <= 0.0 then
-         return 0.0;
+      if Share (K) <= 0.0 then
+         return Long_Float (Rel (I).Counts (Src) (K));
       end if;
-      return Long_Float (Rel (I).Counts (Src) (K)) / S;
+      return Long_Float (Rel (I).Counts (Src) (K)) / Share (K);
    end Ultimate;
 
    Ticket_Share, Crash_Share     : Column_Row;

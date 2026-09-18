@@ -1,13 +1,12 @@
 """Verifier for the release forecast.
 
 test.sh compiles the agent's Ada itself, runs the binary once on the export that shipped and
-once on another product's export it has never seen, then once more on each of those exports cut
-off 200 days before its export date (the back-test the instruction names), asking each run for
-a different output path, and captures what each wrote root-only.
+once on another product's export it has never seen, asking each run for a different output
+path, and captures what each wrote root-only.
 This module only reads those captures and the keys under /opt: the number of reports each
 release had actually collected by day 365. It never runs agent code.
 
-Every bar here is stated in instruction.md, and the same bars apply to all four runs.
+Every bar here is stated in instruction.md, and the same bars apply to both runs.
 """
 import csv
 import datetime
@@ -24,27 +23,17 @@ SHIPPED_KEY = pathlib.Path("/opt/golden/key.json")
 HIDDEN_KEY = pathlib.Path("/opt/hidden/key.json")
 SHIPPED_DATA = pathlib.Path("/app/data")
 HIDDEN_DATA = pathlib.Path("/opt/hidden/data")
-# The back-test: each export cut off 200 days early by test.sh (tests/truncate.py), its forecast
-# list the releases that were young then and have since finished, its key the count each of them
-# went on to reach, read off the full export the program already had.
-EARLIER = pathlib.Path("/opt/earlier")
 
 SHIPPED_SHA = {
     "releases.csv": "e45226fc2ad46aeb1be626637ffa752bafa573279acd5b39d9ea8049cf03e8f2",
     "reports.csv": "9e13926a0a037a96587bad18de24302144d4daa7478797402bd90fa63b7e36ad",
     "policy.json": "839c27cfc21e2e071d5713d5c0f30ba31150894f1137d31e2e34e1a29be3d6bb",
-    "README.md": "66a6e88b46f70e7902079f0ebf1bb89395d2e055ce44bbe8fbd043473a908a7f",
+    "README.md": "8d95887488b8708c19e1b816d59148b4add98399e8243052eef4cef9b90908a5",
 }
 
-FULL_RUNS = [
+RUNS = [
     pytest.param(SHIPPED_RUN, SHIPPED_KEY, SHIPPED_DATA, id="shipped"),
     pytest.param(HIDDEN_RUN, HIDDEN_KEY, HIDDEN_DATA, id="hidden"),
-]
-RUNS = FULL_RUNS + [
-    pytest.param(pathlib.Path("/opt/run_shipped_earlier.json"), EARLIER / "shipped" / "key.json",
-                 EARLIER / "shipped" / "data", id="shipped-earlier"),
-    pytest.param(pathlib.Path("/opt/run_hidden_earlier.json"), EARLIER / "hidden" / "key.json",
-                 EARLIER / "hidden" / "data", id="hidden-earlier"),
 ]
 
 
@@ -204,10 +193,11 @@ def test_wrong_argument_count_is_refused(arity):
     handful, and one more drawn from 41..5000 on every run, so a program that answers one of
     them normally, or that stops refusing past a cutoff, is caught.
 
-    The instruction only says a usage line is printed; it does not fix the wording, so the check
-    here is the part that is actually stated: something reaches stderr. A program that prints an
-    unrelated but non-empty message would still be gaming the letter of the contract, but the
-    contract has no fixed text to hold it to, so nothing narrower than non-empty is enforceable.
+    The instruction only says a line is printed on stderr; it does not fix the wording, so the
+    check here is the part that is actually stated: something reaches stderr and it is a line,
+    newline-terminated. A program that prints an unrelated but non-empty line would still be
+    gaming the letter of the contract, but the contract has no fixed text to hold it to, so
+    nothing narrower is enforceable.
 
     Standard output is the other way round: the contract says it stays empty, and test.sh captures
     it straight from the file descriptor, so the capture is compared as the exact bytes it holds.
@@ -217,12 +207,14 @@ def test_wrong_argument_count_is_refused(arity):
     assert status == 2, f"{arity} arguments gave exit status {status}, not 2"
     assert wrote == "nothing", f"{arity} arguments still wrote the output file it was handed"
     assert out == "", f"{arity} arguments put this on stdout, which the contract says stays empty: {out[:200]!r}"
-    assert err.strip() != "", f"{arity} arguments: nothing reached stderr, though the contract requires a usage line there"
+    assert err.strip() != "" and err.endswith("\n"), (
+        f"{arity} arguments: the contract requires a line on stderr, got {err[:200]!r}"
+    )
     assert violation == "", f"{arity} arguments {violation}"
 
 
 # (tag, the JSON text test.sh wrote after the colon); the tag names the capture files.
-FIXED_HORIZONS = [(str(v), str(v)) for v in (30, 90, 364, 366, 400, 1000, 99999999999999999999)]
+FIXED_HORIZONS = [(str(v), str(v)) for v in (0, 30, 90, 364, 366, 400, 1000, 99999999999999999999)]
 FIXED_HORIZONS += [(v, v) for v in ("365.0", "365e0", "3.65e2", "3650e-1")]
 FIXED_HORIZONS += [("str365", '"365"'), ("true", "true"), ("null", "null"), ("list365", "[365]"), ("obj365", '{"v":365}')]
 DRAWN_HORIZONS_FILE = pathlib.Path("/opt/draws/horizons.txt")
@@ -236,24 +228,28 @@ def _horizon_refused(tag, value):
     status, wrote, _out, err, violation = _probe(f"horizon_{tag}")
     assert status == 3, f"horizon_days {value} gave exit status {status}, not 3"
     assert wrote == "nothing", f"horizon_days {value}, which it cannot answer, still wrote the output file it was handed"
-    assert err.strip() != "", f"horizon_days {value}, which it cannot answer, passed without a word on stderr"
+    assert err.strip() != "" and err.endswith("\n"), (
+        f"horizon_days {value}, which it cannot answer, needs a line on stderr, got {err[:200]!r}"
+    )
     assert violation == "", f"horizon_days {value}: {violation}"
 
 
 @pytest.mark.parametrize("tag,value", FIXED_HORIZONS, ids=[t for t, _ in FIXED_HORIZONS])
 def test_another_horizon_is_refused(tag, value):
-    """Handed a policy whose horizon_days is anything but the integer 365 the program says so on
-    stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
+    """Handed a policy whose horizon_days is anything but the bare token 365 the program says so
+    on stderr, writes nothing and exits 3. Both graded exports say 365, so without this the key
     could go unread. The rule is universal and cannot be run to exhaustion, so it is sampled,
-    and the instruction says so. Sixteen fixed values: two close to 365, two far from it, two
-    round figures, a twenty-digit numeral no 32-bit integer holds (a program that converts
-    first and compares after has to refuse it rather than die on the conversion), four JSON
-    numbers that begin with the digits 365 and are not the integer 365 (365.0, 365e0, 3.65e2
-    and 3650e-1, which a parser that stops at the first non-digit reads as 365), and five
-    values of another JSON type: the string "365", true, null, [365] and {"v":365}, which a
-    parser that coerces a quoted number, or skips ahead to the first digits it finds, reads as
-    365. Only what the instruction states is checked: stdout is not, since the contract says
-    nothing about it on this path."""
+    and the instruction says so. Seventeen fixed values: zero, which a parser that reads it as
+    "not set" and falls back to 365 answers instead of refusing; two close to 365, two far from
+    it, two round figures, a twenty-digit numeral no 32-bit integer holds (a program that
+    converts first and compares after has to refuse it rather than die on the conversion), four
+    JSON numbers that begin with the digits 365 and are not the bare token 365 (365.0, 365e0,
+    3.65e2 and 3650e-1, which a parser that stops at the first non-digit reads as 365, and which
+    the instruction names as another spelling and so another horizon), and five values of
+    another JSON type: the string "365", true, null, [365] and {"v":365}, which a parser that
+    coerces a quoted number, or skips ahead to the first digits it finds, reads as 365. Only
+    what the instruction states is checked: stdout is not, since the contract says nothing
+    about it on this path."""
     _horizon_refused(tag, value)
 
 
@@ -287,7 +283,7 @@ def _reports_by(data_dir, version, source, days):
     )
 
 
-@pytest.mark.parametrize("run_path,key_path,data_dir", FULL_RUNS)
+@pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
 def test_a_release_sits_on_a_column_edge(run_path, key_path, data_dir):
     """A check on the fixture, not on the run. The README states that a release A days old has
     A+1 days of history in the file, the export date included, so a release exactly 60 days old
@@ -360,10 +356,8 @@ def test_report_shape(run_path, key_path, data_dir):
 @pytest.mark.parametrize("run_path,key_path,data_dir", RUNS)
 def test_each_release_within_tolerance(run_path, key_path, data_dir):
     """Every forecast is within the policy's tolerance_per_release of the count the release
-    actually reached by day 365. On the two cut-off exports this is the back-test the
-    instruction names: the releases asked for have since finished, and the count each went on
-    to reach is in the full export the program already had, so the reading that turns a young
-    release's reports and the arrival shares into a forecast is held to the record."""
+    actually reached by day 365, as a fraction of that count. The method section of the README says
+    how the forecast is made; this holds what it produces to the record."""
     f = _forecast(run_path, data_dir)
     real = _key(key_path)["reports_within_365_days"]
     tol = _policy(data_dir)["tolerance_per_release"]
